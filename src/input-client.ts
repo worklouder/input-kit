@@ -1,13 +1,11 @@
 import { EventEmitter } from 'node:events';
 import { decodeInputNotification } from './notifications.js';
 import { JsonRpcTransport } from './transport/json-rpc-transport.js';
-import {
-    InputProtocolError,
-} from './errors.js';
+import { InputProtocolError } from './errors.js';
 import type {
     AddLayerOptions,
-    ChangeKeyLightingOptions,
-    ChangeProfileLayerOptions,
+    SetKeyLightingOptions,
+    SetActiveProfileLayerOptions,
     DeviceInfo,
     InputClientEvents,
     InputClientOptions,
@@ -16,20 +14,26 @@ import type {
 } from './contracts.js';
 import {
     assertDeviceId,
+    assertKeyLightingOptions,
     assertLayerIndex,
     assertProfileIndex,
     isRecord,
+    parseDeviceInfo,
     parseDeviceSummaries,
-    requireRecord,
 } from './validation.js';
 
 const DEFAULT_PORT = 19147;
-const AUTHORIZATION_TIMEOUT_MS = 35_000;
+// Input starts its 30-second unauthenticated timer when the connection opens.
+const AUTHORIZATION_TIMEOUT_MS = 29_000;
+const DEFAULT_ADD_LAYER_TIMEOUT_MS = 120_000;
+const MAX_TIMEOUT_MS = 2_147_483_647;
 const MAX_APPLICATION_NAME_LENGTH = 80;
+const DISALLOWED_APPLICATION_NAME_CHARACTERS = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
 
 /** Public client for Input's local WebSocket API. */
 export class InputClient extends EventEmitter {
     private readonly applicationName: string;
+    private readonly addLayerTimeoutMs: number;
     private readonly transport: JsonRpcTransport;
 
     public constructor(options: InputClientOptions) {
@@ -38,7 +42,9 @@ export class InputClient extends EventEmitter {
         const host = options.host ?? '127.0.0.1';
         const port = options.port ?? DEFAULT_PORT;
         const requestTimeoutMs = options.requestTimeoutMs ?? 10_000;
-        const applicationName = options.applicationName.trim();
+        const addLayerTimeoutMs = options.addLayerTimeoutMs ?? DEFAULT_ADD_LAYER_TIMEOUT_MS;
+        const normalizedApplicationName = options.applicationName.normalize('NFKC');
+        const applicationName = normalizedApplicationName.trim();
 
         if (!['127.0.0.1', '::1', 'localhost'].includes(host)) {
             throw new TypeError('InputClient only supports loopback hosts');
@@ -46,18 +52,18 @@ export class InputClient extends EventEmitter {
         if (!Number.isSafeInteger(port) || port < 1 || port > 65_535) {
             throw new RangeError('port must be an integer between 1 and 65535');
         }
-        if (!Number.isSafeInteger(requestTimeoutMs) || requestTimeoutMs < 1) {
-            throw new RangeError('requestTimeoutMs must be a positive safe integer');
-        }
+        assertTimeoutMs('requestTimeoutMs', requestTimeoutMs);
+        assertTimeoutMs('addLayerTimeoutMs', addLayerTimeoutMs);
         if (
             applicationName.length === 0 ||
             applicationName.length > MAX_APPLICATION_NAME_LENGTH ||
-            /[\u0000-\u001f\u007f\u2028\u2029]/u.test(applicationName)
+            DISALLOWED_APPLICATION_NAME_CHARACTERS.test(normalizedApplicationName)
         ) {
             throw new TypeError('applicationName must be 1 to 80 printable characters');
         }
 
         this.applicationName = applicationName;
+        this.addLayerTimeoutMs = addLayerTimeoutMs;
         this.transport = new JsonRpcTransport({ host, port, requestTimeoutMs });
         this.transport.on('notification', (notification) => this.forwardNotification(notification));
         this.transport.on('disconnected', (event) => this.emit('disconnected', event));
@@ -91,7 +97,7 @@ export class InputClient extends EventEmitter {
 
     public async requestAuthorization(): Promise<AuthorizationCredentials> {
         const result = await this.transport.request<unknown>(
-            'requestAutorization',
+            'requestAuthorization',
             { applicationName: this.applicationName },
             AUTHORIZATION_TIMEOUT_MS,
         );
@@ -106,7 +112,8 @@ export class InputClient extends EventEmitter {
     }
 
     public async authenticate(credentials: AuthorizationCredentials): Promise<void> {
-        const result = await this.transport.request<unknown>('authenticate', credentials);
+        const { applicationId, token } = credentials;
+        const result = await this.transport.request<unknown>('authenticate', { applicationId, token });
         if (!isRecord(result) || result.authenticated !== true) {
             throw new InputProtocolError('Input returned an invalid authentication response');
         }
@@ -122,27 +129,36 @@ export class InputClient extends EventEmitter {
     public async getDeviceInfo(deviceId: number): Promise<DeviceInfo> {
         assertDeviceId(deviceId);
         const result = await this.transport.request<unknown>('getDeviceInfo', { deviceId });
-        return requireRecord(result, 'Input returned invalid device information');
+        const deviceInfo = parseDeviceInfo(result);
+        if (!deviceInfo) throw new InputProtocolError('Input returned invalid device information');
+        return deviceInfo;
     }
 
-    public async changeProfileLayer(
-        options: ChangeProfileLayerOptions,
+    public async setActiveProfileLayer(
+        options: SetActiveProfileLayerOptions,
     ): Promise<{ changed: true }> {
-        assertDeviceId(options.deviceId);
-        assertProfileIndex(options.profileIndex);
-        assertLayerIndex(options.layerIndex);
-        const result = await this.transport.request<unknown>('changeProfileLayer', options);
+        const { deviceId, profileIndex, layerIndex } = options;
+        assertDeviceId(deviceId);
+        assertProfileIndex(profileIndex);
+        assertLayerIndex(layerIndex);
+        const result = await this.transport.request<unknown>(
+            'setActiveProfileLayer',
+            { deviceId, profileIndex, layerIndex },
+        );
         if (!isRecord(result) || result.changed !== true) {
-            throw new InputProtocolError('Input returned an invalid changeProfileLayer response');
+            throw new InputProtocolError('Input returned an invalid setActiveProfileLayer response');
         }
         return { changed: true };
     }
 
-    public async changeKeyLighting(
-        options: ChangeKeyLightingOptions,
+    public async setKeyLighting(
+        options: SetKeyLightingOptions,
     ): Promise<{ applied: true }> {
-        assertDeviceId(options.deviceId);
-        const result = await this.transport.request<unknown>('changeKeyLighting', options);
+        const { deviceId, identifier, isRegex, color, brightness, effect, speed } = options;
+        // JSON serialization omits undefined optional fields.
+        const params = { deviceId, identifier, isRegex, color, brightness, effect, speed };
+        assertKeyLightingOptions(params);
+        const result = await this.transport.request<unknown>('setKeyLighting', params);
         if (!isRecord(result) || result.applied !== true) {
             throw new InputProtocolError('Input returned an invalid lighting response');
         }
@@ -150,9 +166,14 @@ export class InputClient extends EventEmitter {
     }
 
     public async addLayer(options: AddLayerOptions): Promise<{ added: true }> {
-        assertDeviceId(options.deviceId);
-        assertProfileIndex(options.profileIndex);
-        const result = await this.transport.request<unknown>('addLayer', options);
+        const { deviceId, profileIndex, preset } = options;
+        assertDeviceId(deviceId);
+        assertProfileIndex(profileIndex);
+        const result = await this.transport.request<unknown>(
+            'addLayer',
+            { deviceId, profileIndex, preset },
+            this.addLayerTimeoutMs,
+        );
         if (!isRecord(result) || result.added !== true) {
             throw new InputProtocolError('Input returned an invalid addLayer response');
         }
@@ -180,10 +201,16 @@ export class InputClient extends EventEmitter {
             case 'deviceInfoChanged':
                 this.emit('deviceInfoChanged', decoded.event);
                 break;
-            case 'apiKey':
-                this.emit('apiKey', decoded.event);
+            case 'keyTriggered':
+                this.emit('keyTriggered', decoded.event);
                 break;
         }
         this.emit('notification', notification);
+    }
+}
+
+function assertTimeoutMs(name: string, value: number): void {
+    if (!Number.isInteger(value) || value < 1 || value > MAX_TIMEOUT_MS) {
+        throw new RangeError(name + ' must be an integer between 1 and ' + MAX_TIMEOUT_MS);
     }
 }

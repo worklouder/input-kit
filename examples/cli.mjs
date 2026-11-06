@@ -1,7 +1,7 @@
 import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { InputClient } from '../dist/index.js';
+import { InputClient, InputRequestTimeoutError } from '../dist/index.js';
 
 const command = process.argv[2] ?? 'watch';
 if (command !== 'devices' && command !== 'watch') {
@@ -15,8 +15,8 @@ if (command !== 'devices' && command !== 'watch') {
         console.log('Devices updated:', JSON.stringify(devices, null, 2));
         void printDeviceStates(client, devices);
     });
-    client.on('apiKey', ({ deviceId, identifier, action }) => {
-        console.log('API key:', deviceId, identifier, action);
+    client.on('keyTriggered', ({ deviceId, identifier, action }) => {
+        console.log('Key triggered:', deviceId, identifier, action);
     });
     client.on('deviceInfoChanged', ({ deviceId, deviceInfo }) => {
         printDeviceState(deviceId, deviceInfo);
@@ -60,6 +60,7 @@ async function authenticateOrAuthorize(client, credentialsPath) {
             console.log('Authenticated with saved demo credentials.');
             return;
         } catch (error) {
+            if (error instanceof InputRequestTimeoutError) throw error;
             throw new Error(
                 'Saved credentials could not authenticate. Remove the demo credentials file and run again to request authorization.',
                 { cause: error },
@@ -67,6 +68,7 @@ async function authenticateOrAuthorize(client, credentialsPath) {
         }
     }
 
+    console.log('Approve this integration in Input within 29 seconds.');
     const newCredentials = await client.requestAuthorization();
     await saveCredentials(credentialsPath, newCredentials);
     console.log('Authorization approved. Demo credentials saved to ' + credentialsPath);
@@ -146,7 +148,7 @@ function printDeviceState(deviceId, deviceInfo) {
         : 'unknown';
     console.log(
         'Device ' + deviceId + deviceType + ': profile index ' + profileIndex +
-            ', layer index ' + layerIndex,
+            ' (starts at 0), layer index ' + layerIndex + ' (starts at 1)',
     );
 }
 

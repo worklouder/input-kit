@@ -1,16 +1,22 @@
 import { InputProtocolError } from './errors.js';
 import type {
-    ApiKeyEvent,
+    KeyTriggeredEvent,
     DeviceInfoChangedEvent,
     DevicesUpdatedEvent,
     InputNotification,
 } from './contracts.js';
-import { isPositiveSafeInteger, isRecord, parseDeviceSummaries } from './validation.js';
+import {
+    isApiIdentifier,
+    isPositiveSafeInteger,
+    isRecord,
+    parseDeviceInfo,
+    parseDeviceSummaries,
+} from './validation.js';
 
 export type DecodedInputNotification =
     | { type: 'devicesUpdated'; event: DevicesUpdatedEvent }
     | { type: 'deviceInfoChanged'; event: DeviceInfoChangedEvent }
-    | { type: 'apiKey'; event: ApiKeyEvent }
+    | { type: 'keyTriggered'; event: KeyTriggeredEvent }
     | { type: 'other'; event: InputNotification };
 
 export function decodeInputNotification(
@@ -23,25 +29,26 @@ export function decodeInputNotification(
             if (!devices) throw new InputProtocolError('Input sent an invalid devicesUpdated event');
             return { type: 'devicesUpdated', event: { devices } };
         }
-        case 'onDeviceInfoChanged': {
-            if (!isPositiveSafeInteger(params.deviceId) || !isRecord(params.deviceInfo)) {
-                throw new InputProtocolError('Input sent an invalid onDeviceInfoChanged event');
+        case 'deviceInfoChanged': {
+            const deviceInfo = parseDeviceInfo(params.deviceInfo);
+            if (!isPositiveSafeInteger(params.deviceId) || !deviceInfo) {
+                throw new InputProtocolError('Input sent an invalid deviceInfoChanged event');
             }
             return {
                 type: 'deviceInfoChanged',
-                event: { deviceId: params.deviceId, deviceInfo: params.deviceInfo },
+                event: { deviceId: params.deviceId, deviceInfo },
             };
         }
-        case 'onApiKey': {
+        case 'keyTriggered': {
             if (
                 !isPositiveSafeInteger(params.deviceId) ||
-                typeof params.identifier !== 'string' ||
-                !isApiKeyAction(params.action)
+                !isApiIdentifier(params.identifier) ||
+                !isKeyTrigger(params.action)
             ) {
-                throw new InputProtocolError('Input sent an invalid onApiKey event');
+                throw new InputProtocolError('Input sent an invalid keyTriggered event');
             }
             return {
-                type: 'apiKey',
+                type: 'keyTriggered',
                 event: {
                     deviceId: params.deviceId,
                     identifier: params.identifier,
@@ -54,6 +61,6 @@ export function decodeInputNotification(
     }
 }
 
-function isApiKeyAction(value: unknown): value is ApiKeyEvent['action'] {
+function isKeyTrigger(value: unknown): value is KeyTriggeredEvent['action'] {
     return value === 'press' || value === 'release' || value === 'click';
 }

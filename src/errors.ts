@@ -30,7 +30,8 @@ export class InputRequestTimeoutError extends Error {
         public readonly method: string,
         public readonly timeoutMs: number,
     ) {
-        super('Input request ' + method + ' timed out after ' + timeoutMs + ' ms');
+        super('Input request ' + method + ' timed out after ' + timeoutMs +
+            ' ms. The operation outcome may be unknown.');
         this.name = 'InputRequestTimeoutError';
     }
 }

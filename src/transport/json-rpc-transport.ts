@@ -16,11 +16,22 @@ interface TransportEvents {
     protocolError: InputProtocolError;
 }
 
-interface PendingRequest {
+const MAX_REQUEST_BYTES = 512 * 1024;
+// Input allows 30 requests per connection in a rolling 10-second window.
+const REQUEST_SPACING_MS = 400;
+
+interface QueuedRequest {
+    id: number;
     method: string;
-    timer: ReturnType<typeof setTimeout>;
+    frame: string;
+    timeoutMs: number;
     resolve: (result: unknown) => void;
     reject: (error: Error) => void;
+}
+
+interface PendingRequest {
+    request: QueuedRequest;
+    timer: ReturnType<typeof setTimeout>;
 }
 
 interface JsonRpcMessage extends Record<string, unknown> {
@@ -40,7 +51,10 @@ export class JsonRpcTransport extends EventEmitter {
     private socket?: WebSocket;
     private connectPromise?: Promise<void>;
     private nextRequestId = 1;
-    private readonly pending = new Map<number, PendingRequest>();
+    private readonly queue: QueuedRequest[] = [];
+    private pending?: PendingRequest;
+    private sendTimer?: ReturnType<typeof setTimeout>;
+    private nextSendAt = 0;
     private readonly requestTimeoutMs: number;
 
     public constructor(options: JsonRpcTransportOptions) {
@@ -66,6 +80,9 @@ export class JsonRpcTransport extends EventEmitter {
         if (this.connected) return;
         if (this.connectPromise) return this.connectPromise;
 
+        if (this.socket) {
+            this.rejectOutstanding(new InputConnectionError('Input connection was replaced'));
+        }
         const socket = new WebSocket(this.url, {
             handshakeTimeout: 5_000,
             perMessageDeflate: false,
@@ -78,11 +95,15 @@ export class JsonRpcTransport extends EventEmitter {
                 opened = true;
                 resolve();
             });
-            socket.on('message', (data, isBinary) => this.handleMessage(data, isBinary));
+            socket.on('message', (data, isBinary) => {
+                if (this.socket === socket && socket.readyState === WebSocket.OPEN) {
+                    this.handleMessage(socket, data, isBinary);
+                }
+            });
             socket.on('error', (error) => {
                 if (!opened) {
                     reject(new InputConnectionError('Could not connect to Input at ' + this.url, error));
-                } else {
+                } else if (this.socket === socket) {
                     this.emit('transportError', error);
                 }
             });
@@ -112,7 +133,7 @@ export class JsonRpcTransport extends EventEmitter {
         const socket = this.socket;
         if (!socket || socket.readyState === WebSocket.CLOSED) return;
 
-        await new Promise<void>((resolve) => {
+        const closed = new Promise<void>((resolve) => {
             socket.once('close', () => resolve());
             if (socket.readyState === WebSocket.CONNECTING) {
                 socket.terminate();
@@ -120,55 +141,82 @@ export class JsonRpcTransport extends EventEmitter {
                 socket.close(1000, 'Client closed connection');
             }
         });
+        this.rejectOutstanding(new InputConnectionError('Input connection is closing'));
+        await closed;
     }
 
-    public request<T>(method: string, params?: object, timeoutMs = this.requestTimeoutMs): Promise<T> {
+    public async request<T>(method: string, params?: object, timeoutMs = this.requestTimeoutMs): Promise<T> {
         const socket = this.socket;
         if (!socket || socket.readyState !== WebSocket.OPEN) {
-            return Promise.reject(new InputConnectionError('Connect to Input before making requests'));
+            throw new InputConnectionError('Connect to Input before making requests');
         }
 
-        const id = this.allocateRequestId();
-        const request: Record<string, unknown> = { jsonrpc: '2.0', id, method };
-        if (params !== undefined) request.params = params;
+        const id = this.nextRequestId;
+        this.nextRequestId = id >= Number.MAX_SAFE_INTEGER ? 1 : id + 1;
+        const frame = JSON.stringify({ jsonrpc: '2.0', id, method, params });
+        if (Buffer.byteLength(frame, 'utf8') > MAX_REQUEST_BYTES) {
+            throw new RangeError('Input request ' + method + ' exceeds the 512 KiB WebSocket message limit');
+        }
+        if (this.socket !== socket || socket.readyState !== WebSocket.OPEN) {
+            throw new InputConnectionError('Input connection changed while preparing the request');
+        }
 
         return new Promise<T>((resolve, reject) => {
-            const timer = setTimeout(() => {
-                this.pending.delete(id);
-                reject(new InputRequestTimeoutError(method, timeoutMs));
-            }, timeoutMs);
-
-            this.pending.set(id, {
+            this.queue.push({
+                id,
                 method,
-                timer,
+                frame,
+                timeoutMs,
                 resolve: (result) => resolve(result as T),
                 reject,
             });
-
-            socket.send(JSON.stringify(request), (error) => {
-                if (error) {
-                    this.rejectRequest(
-                        id,
-                        new InputConnectionError('Could not send ' + method + ' request', error),
-                    );
-                }
-            });
+            this.sendNext();
         });
     }
 
-    private allocateRequestId(): number {
-        for (let attempt = 0; attempt <= this.pending.size; attempt += 1) {
-            const id = this.nextRequestId;
-            this.nextRequestId = id >= Number.MAX_SAFE_INTEGER ? 1 : id + 1;
-            if (!this.pending.has(id)) return id;
+    private sendNext(): void {
+        const socket = this.socket;
+        const request = this.queue[0];
+        if (!socket || socket.readyState !== WebSocket.OPEN || this.pending || this.sendTimer || !request) {
+            return;
         }
-        throw new Error('Could not allocate a JSON-RPC request ID');
+
+        const delay = Math.ceil(this.nextSendAt - performance.now());
+        if (delay > 0) {
+            this.sendTimer = setTimeout(() => {
+                this.sendTimer = undefined;
+                this.sendNext();
+            }, delay);
+            return;
+        }
+
+        // Queued requests only start their response timer when they are sent.
+        this.queue.shift();
+        const timer = setTimeout(() => {
+            this.rejectRequest(request, new InputRequestTimeoutError(request.method, request.timeoutMs));
+        }, request.timeoutMs);
+        this.pending = { request, timer };
+        this.nextSendAt = performance.now() + REQUEST_SPACING_MS;
+
+        const onSendError = (error: Error): void => {
+            this.rejectRequest(
+                request,
+                new InputConnectionError('Could not send ' + request.method + ' request', error),
+            );
+        };
+        try {
+            socket.send(request.frame, (error) => {
+                if (error) onSendError(error);
+            });
+        } catch (error) {
+            onSendError(error instanceof Error ? error : new Error(String(error)));
+        }
     }
 
-    private handleMessage(data: RawData, isBinary: boolean): void {
+    private handleMessage(socket: WebSocket, data: RawData, isBinary: boolean): void {
         if (isBinary) {
+            socket.close(1003, 'Text messages only');
             this.emit('protocolError', new InputProtocolError('Input sent an unexpected binary frame'));
-            this.socket?.close(1003, 'Text messages only');
             return;
         }
 
@@ -200,32 +248,34 @@ export class JsonRpcTransport extends EventEmitter {
     }
 
     private handleResponse(message: JsonRpcMessage): void {
-        const id = message.id;
-        if (typeof id !== 'number' || !Number.isSafeInteger(id)) return;
-
-        const pending = this.pending.get(id);
-        if (!pending) return;
+        const pending = this.pending;
+        if (!pending || message.id !== pending.request.id) return;
+        const { request } = pending;
 
         if (isRecord(message.error)) {
             if (typeof message.error.code !== 'number' || typeof message.error.message !== 'string') {
-                this.rejectRequest(id, new InputProtocolError('Input sent an invalid RPC error'));
+                this.rejectRequest(request, new InputProtocolError('Input sent an invalid RPC error'));
                 return;
             }
-            this.rejectRequest(id, new InputApiError(message.error.code, message.error.message));
+            this.rejectRequest(request, new InputApiError(message.error.code, message.error.message));
             return;
         }
 
         if (!Object.prototype.hasOwnProperty.call(message, 'result')) {
-            this.rejectRequest(id, new InputProtocolError('Input sent an invalid JSON-RPC response'));
+            this.rejectRequest(request, new InputProtocolError('Input sent an invalid JSON-RPC response'));
             return;
         }
 
-        this.resolveRequest(id, message.result);
+        clearTimeout(pending.timer);
+        this.pending = undefined;
+        request.resolve(message.result);
+        this.sendNext();
     }
 
     private handleClose(socket: WebSocket, code: number, reason: string): void {
-        if (this.socket === socket) this.socket = undefined;
-        this.rejectAllPending(
+        if (this.socket !== socket) return;
+        this.socket = undefined;
+        this.rejectOutstanding(
             new InputConnectionError(
                 'Input connection closed (' + code + ')' + (reason ? ': ' + reason : ''),
             ),
@@ -233,28 +283,25 @@ export class JsonRpcTransport extends EventEmitter {
         this.emit('disconnected', { code, reason });
     }
 
-    private resolveRequest(id: number, result: unknown): void {
-        const pending = this.pending.get(id);
-        if (!pending) return;
-        clearTimeout(pending.timer);
-        this.pending.delete(id);
-        pending.resolve(result);
+    private rejectRequest(request: QueuedRequest, error: Error): void {
+        if (this.pending?.request !== request) return;
+        clearTimeout(this.pending.timer);
+        this.pending = undefined;
+        request.reject(error);
+        this.sendNext();
     }
 
-    private rejectRequest(id: number, error: Error): void {
-        const pending = this.pending.get(id);
-        if (!pending) return;
-        clearTimeout(pending.timer);
-        this.pending.delete(id);
-        pending.reject(error);
-    }
-
-    private rejectAllPending(error: Error): void {
-        for (const [id, pending] of this.pending) {
-            clearTimeout(pending.timer);
-            pending.reject(error);
-            this.pending.delete(id);
+    private rejectOutstanding(error: InputConnectionError): void {
+        clearTimeout(this.sendTimer);
+        this.sendTimer = undefined;
+        this.nextSendAt = 0;
+        if (this.pending) {
+            clearTimeout(this.pending.timer);
+            this.pending.request.reject(error);
+            this.pending = undefined;
         }
+        for (const request of this.queue) request.reject(error);
+        this.queue.length = 0;
     }
 }
 

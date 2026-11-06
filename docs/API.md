@@ -12,10 +12,11 @@ const input = new InputClient({
   // host: '127.0.0.1',
   // port: 19147,
   // requestTimeoutMs: 10_000,
+  // addLayerTimeoutMs: 120_000,
 });
 ```
 
-`applicationName` is required, trimmed, and limited to 80 printable characters. `host` accepts only `127.0.0.1`, `::1`, or `localhost`. `port` defaults to `19147`; the path is `/input`. `requestTimeoutMs` applies to normal API requests and defaults to 10 seconds. The authorization request has a 35-second timeout to allow for the approval prompt.
+`applicationName` is normalized, trimmed, and limited to 80 printable characters. It cannot contain Unicode control, format, line, or paragraph separators. `host` accepts only `127.0.0.1`, `::1`, or `localhost`. `port` defaults to `19147` and the path is `/input`. `requestTimeoutMs` defaults to 10 seconds for ordinary requests. `addLayerTimeoutMs` defaults to 120 seconds. Both options accept integer milliseconds from `1` through `2_147_483_647`. `requestAuthorization` has a fixed 29-second response timeout. Input closes an unauthenticated connection 30 seconds after opening it, so request authorization promptly after connecting.
 
 ## Connection lifecycle
 
@@ -25,7 +26,7 @@ Opens the WebSocket connection. It does not request authorization or authenticat
 
 ### `close(): Promise<void>`
 
-Closes the connection and rejects outstanding requests with `InputConnectionError`.
+Closes the connection and rejects queued and in-flight requests with `InputConnectionError`. A disconnect also rejects outstanding requests. A new connection starts with an empty queue.
 
 ### `connected: boolean`
 
@@ -35,7 +36,7 @@ Reports whether the WebSocket is currently open. `url: string` exposes the resol
 
 ### `requestAuthorization(): Promise<AuthorizationCredentials>`
 
-Requests first-time approval in Input. InputKit exposes this as `requestAuthorization()`. The current Input WebSocket server spells the wire method `requestAutorization`; InputKit sends that exact method name for compatibility. The result is:
+Requests first-time approval using the `requestAuthorization` wire method. Input returns the application ID and token and authenticates the current connection.
 
 ```ts
 interface AuthorizationCredentials {
@@ -54,6 +55,8 @@ Authenticates a previously authorized application. The saved permission must all
 
 All request methods require an open, authenticated connection, except `requestAuthorization` and `authenticate`.
 
+InputKit sends requests in call order, with one request awaiting a response at a time and at least 400 ms between sends. This keeps traffic below Input's limit of 30 requests per rolling 10 seconds per connection. The response timeout begins when the frame is sent, so time spent in the queue is separate. InputKit measures the entire serialized request in UTF-8 and rejects any message larger than 512 KiB before sending it. InputKit never retries requests automatically.
+
 ### `getDevices(): Promise<DeviceSummary[]>`
 
 Returns ready devices supported by the current Input build. Device IDs are runtime IDs and can change after reconnection.
@@ -67,45 +70,64 @@ interface DeviceSummary {
 
 ### `getDeviceInfo(deviceId: number): Promise<DeviceInfo>`
 
-Returns Input's cached device information snapshot. It can include `deviceStatus.selectedProfileIndex` and `deviceStatus.selectedLayerIndex` when Input knows the values. The method does not query the device for fresh state.
-
-`DeviceInfo` is `Record<string, unknown>` because fields vary by device and firmware version.
-
-### `changeProfileLayer(options: ChangeProfileLayerOptions): Promise<{ changed: true }>`
-
-Selects the active profile and layer together. Both indexes are zero-based and checked against Input's cached device configuration before Input sends the change to the device. A successful response means the request was accepted; the device's later profile/layer notification is the authoritative state update.
+Returns the latest `DeviceInfo` snapshot available to Input.
 
 ```ts
-interface ChangeProfileLayerOptions {
+interface DeviceInfo {
+  portPath: string;
+  devicePid: string;
+  serialNumber?: string;
+  connectionType: number;
+  deviceType: string;
+  layoutType: string;
+  isUsbConnection: boolean;
+  deviceStatus?: DeviceStatus;
+}
+
+interface DeviceStatus {
+  firmwareVersion?: string;
+  selectedProfileIndex?: number; // zero-based
+  selectedLayerIndex?: number;   // one-based
+  batteryPercentage?: number;    // 0–100
+  isCharging?: boolean;
+}
+```
+
+### `setActiveProfileLayer(options: SetActiveProfileLayerOptions): Promise<{ changed: true }>`
+
+Selects the active profile and layer together using the `setActiveProfileLayer` wire method. `deviceId` must be a positive safe integer. `profileIndex` is zero-based and `layerIndex` is one-based. Watch `deviceInfoChanged` for updates to the reported selection.
+
+```ts
+interface SetActiveProfileLayerOptions {
   deviceId: number;
-  profileIndex: number;
-  layerIndex: number;
+  profileIndex: number; // zero-based
+  layerIndex: number;   // one-based
 }
 ```
 
 Input returns an error if the device, profile, or layer is unavailable, or if the device rejects the change.
 
-### `changeKeyLighting(options: ChangeKeyLightingOptions): Promise<{ applied: true }>`
+### `setKeyLighting(options: SetKeyLightingOptions): Promise<{ applied: true }>`
 
-Changes lighting for API Smart Actions matched by identifier. At least one lighting property must be provided.
+Changes lighting for API Smart Actions matched by identifier. `deviceId` must be a positive safe integer. Provide at least one lighting property.
 
 ```ts
-interface ChangeKeyLightingOptions {
+interface SetKeyLightingOptions {
   deviceId: number;
   identifier: string;
   isRegex: boolean;
-  color?: number;      // 0–0xFFFFFF
+  color?: number;      // integer from 0 to 0xFFFFFF
   brightness?: number; // 0–1
   effect?: number;     // 0, 1, 3, 4, or 6
   speed?: number;      // 0–1
 }
 ```
 
-When `isRegex` is true, `identifier` is treated as a regular expression by Input. A successful response means Input's device layer acknowledged the request; it does not guarantee that the Smart Action is visible on the active layer.
+When `isRegex` is false, `identifier` must be 1 to 128 UTF-16 code units with no surrounding whitespace, ASCII control characters, or Unicode line and paragraph separators. When `isRegex` is true, supply a regular expression of 1 to 256 UTF-16 code units. Requests with invalid or unsupported patterns can fail with `InputApiError`. A successful response confirms that the update was accepted. The Smart Action's visibility depends on the active layer.
 
 ### `addLayer(options: AddLayerOptions): Promise<{ added: true }>`
 
-Adds the supplied preset layer and its referenced actions to an existing profile, then writes and verifies the device keymap.
+Adds the supplied preset and its referenced actions to an existing profile on the device.
 
 ```ts
 interface AddLayerOptions {
@@ -115,9 +137,9 @@ interface AddLayerOptions {
 }
 ```
 
-`Preset` is a JSON-compatible representation of Input's `PresetDTO` and includes `id`, `name`, `os`, `keyboardLayoutTypes`, `devices`, `layer`, `actions`, `actionGroups`, `multiactions`, and `multiactionGroups`; Smart Action fields and descriptive metadata are optional. Input validates that the preset matches the target device and profile. It rejects malformed key layouts, unknown keycodes, command Smart Actions, profiles with six layers, and writes that conflict with another configuration write.
+`preset` is JSON-compatible and includes `id`, `name`, `os`, `keyboardLayoutTypes`, `devices`, `layer`, `actions`, `actionGroups`, `multiactions`, and `multiactionGroups`. Smart Action fields and descriptive metadata are optional. The preset must be compatible with the target device and profile. The request can fail if the key layout is malformed, keycodes are unknown, the preset contains command Smart Actions, the profile already has six layers, or another configuration change conflicts with the request.
 
-Adding a layer does not select it. The current WebSocket API has no method for selecting an active profile or layer.
+To select a profile and layer after adding a layer, call `setActiveProfileLayer` with the desired indexes.
 
 ## Events
 
@@ -129,11 +151,11 @@ Emitted with `{ devices: DeviceSummary[] }` when the ready-device list changes.
 
 ### `deviceInfoChanged`
 
-Emitted with `{ deviceId, deviceInfo }` when Input publishes a device information snapshot. Replace any cached snapshot with this complete value rather than merging it. Current firmware forwarding includes profile/layer notifications when the notification reaches Input and an initial `deviceStatus` is available.
+Emitted with `{ deviceId, deviceInfo }` for the `deviceInfoChanged` wire notification. Use this complete value to replace any cached snapshot. The event can report profile and layer changes when `deviceStatus` is available.
 
-### `apiKey`
+### `keyTriggered`
 
-Emitted with `{ deviceId, identifier, action }`, where `action` is `press`, `release`, or `click`, for mapped API Smart Actions.
+Emitted for the `keyTriggered` wire notification with `{ deviceId, identifier, action }` for mapped API Smart Actions. `action` is `press`, `release`, or `click`. The identifier follows the literal identifier rules for `setKeyLighting`.
 
 ### `notification`
 
@@ -141,7 +163,7 @@ Emitted with `{ method, params }` for every valid server notification. This incl
 
 ### Connection and protocol events
 
-- `disconnected`: `{ code, reason }` after the socket closes.
+- `disconnected` provides `{ code, reason }` when the current connection closes.
 - `transportError`: a WebSocket transport `Error`.
 - `protocolError`: an `InputProtocolError` when Input sends malformed JSON-RPC or event data.
 
@@ -151,8 +173,10 @@ Request promises reject with these exported error classes:
 
 - `InputApiError`: Input returned an error code and message. The numeric protocol code is available as `code`.
 - `InputConnectionError`: the socket was unavailable, closed during a request, or could not send the request.
-- `InputRequestTimeoutError`: a request exceeded its timeout; `method` and `timeoutMs` are available.
+- `InputRequestTimeoutError` reports an expired response timeout. The operation outcome may be unknown because Input could still complete it. The error exposes the wire `method` and `timeoutMs`.
 - `InputProtocolError`: Input returned a response with an invalid shape.
+
+Local request validation can also reject with `TypeError` or `RangeError`, including a `RangeError` for an oversized request.
 
 Input's API error codes can vary by method. Preserve `InputApiError.code` and message when handling errors instead of relying only on the message text.
 
@@ -160,7 +184,7 @@ Input's API error codes can vary by method. Preserve `InputApiError.code` and me
 
 ```ts
 const input = new InputClient({ applicationName: 'My Integration' });
-input.on('apiKey', ({ identifier, action }) => handleAction(identifier, action));
+input.on('keyTriggered', ({ identifier, action }) => handleAction(identifier, action));
 await input.connect();
 await input.authenticate(savedCredentials);
 

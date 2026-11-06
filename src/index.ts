@@ -7,10 +7,11 @@ export {
 } from './errors.js';
 export type {
     AddLayerOptions,
-    ApiKeyAction,
-    ApiKeyEvent,
-    ChangeKeyLightingOptions,
-    ChangeProfileLayerOptions,
+    DeviceStatus,
+    KeyTrigger,
+    KeyTriggeredEvent,
+    SetKeyLightingOptions,
+    SetActiveProfileLayerOptions,
     DeviceInfo,
     DeviceInfoChangedEvent,
     DeviceSummary,

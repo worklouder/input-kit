@@ -6,7 +6,10 @@ export interface InputClientOptions {
     applicationName: string;
     host?: LoopbackHost;
     port?: number;
+    /** Response timeout for ordinary requests. Defaults to 10 seconds. */
     requestTimeoutMs?: number;
+    /** Response timeout for addLayer. Defaults to 120 seconds. */
+    addLayerTimeoutMs?: number;
 }
 
 export interface AuthorizationCredentials {
@@ -19,13 +22,32 @@ export interface DeviceSummary {
     deviceType: string;
 }
 
-export type DeviceInfo = Record<string, unknown>;
-export type ApiKeyAction = 'press' | 'release' | 'click';
+export interface DeviceStatus {
+    firmwareVersion?: string;
+    /** Zero-based active profile index. */
+    selectedProfileIndex?: number;
+    /** One-based active layer index. */
+    selectedLayerIndex?: number;
+    batteryPercentage?: number;
+    isCharging?: boolean;
+}
 
-export interface ApiKeyEvent {
+export interface DeviceInfo {
+    portPath: string;
+    devicePid: string;
+    serialNumber?: string;
+    connectionType: number;
+    deviceType: string;
+    layoutType: string;
+    isUsbConnection: boolean;
+    deviceStatus?: DeviceStatus;
+}
+export type KeyTrigger = 'press' | 'release' | 'click';
+
+export interface KeyTriggeredEvent {
     deviceId: number;
     identifier: string;
-    action: ApiKeyAction;
+    action: KeyTrigger;
 }
 
 export interface DevicesUpdatedEvent {
@@ -45,22 +67,22 @@ export interface InputNotification {
 export interface InputClientEvents {
     devicesUpdated: DevicesUpdatedEvent;
     deviceInfoChanged: DeviceInfoChangedEvent;
-    apiKey: ApiKeyEvent;
+    keyTriggered: KeyTriggeredEvent;
     notification: InputNotification;
     disconnected: { code: number; reason: string };
     transportError: Error;
     protocolError: InputProtocolError;
 }
 
-export interface ChangeProfileLayerOptions {
+export interface SetActiveProfileLayerOptions {
     deviceId: number;
     /** Zero-based profile index. */
     profileIndex: number;
-    /** Zero-based layer index within the selected profile. */
+    /** One-based layer index within the selected profile. */
     layerIndex: number;
 }
 
-export interface ChangeKeyLightingOptions {
+export interface SetKeyLightingOptions {
     deviceId: number;
     identifier: string;
     isRegex: boolean;
@@ -70,11 +92,7 @@ export interface ChangeKeyLightingOptions {
     speed?: number;
 }
 
-/**
- * JSON preset data accepted by Input's addLayer WebSocket method.
- * This mirrors the public shape of Input's PresetDTO without depending on the
- * desktop application's private TypeScript modules.
- */
+/** JSON preset data accepted by the addLayer WebSocket method. */
 export interface Preset {
     id: number;
     name: string;
