@@ -7,15 +7,15 @@ on:
 
 permissions:
   contents: read
-  id-token: write
 
 concurrency:
   group: npm-release
   cancel-in-progress: false
+  queue: max
 
 jobs:
-  publish:
-    name: Publish to npm
+  build:
+    name: Verify and pack release
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -25,6 +25,50 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Verify release commit is on main
+        run: git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 26
+          package-manager-cache: false
+
+      - name: Install Yarn
+        run: npm install --global yarn@1.22.22
+
+      - name: Verify release tag
+        run: yarn release verify-tag "$GITHUB_REF_NAME"
+
+      - name: Install dependencies
+        run: yarn install --frozen-lockfile --non-interactive
+
+      - name: Build and test
+        run: yarn test
+
+      - name: Pack package
+        run: |
+          tarball=$(npm pack --ignore-scripts --pack-destination "$RUNNER_TEMP")
+          mv "$RUNNER_TEMP/$tarball" "$RUNNER_TEMP/input-kit.tgz"
+
+      - name: Upload release tarball
+        uses: actions/upload-artifact@v7
+        with:
+          name: npm-package
+          path: ${{ runner.temp }}/input-kit.tgz
+          if-no-files-found: error
+          overwrite: true
+
+  publish:
+    name: Publish to npm
+    needs: build
+    environment: npm-publish
+    permissions:
+      id-token: write
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
       - name: Set up Node.js
         uses: actions/setup-node@v6
         with:
@@ -35,19 +79,11 @@ jobs:
       - name: Install trusted-publishing npm version
         run: npm install --global "npm@^11.5.1"
 
-      - name: Install Yarn
-        run: npm install --global yarn@1.22.22
-
-      - name: Install dependencies
-        run: yarn install --frozen-lockfile --non-interactive
-
-      - name: Verify release tag and branch
-        run: |
-          yarn release verify-tag "$GITHUB_REF_NAME"
-          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
-
-      - name: Build and test
-        run: yarn test
+      - name: Download release tarball
+        uses: actions/download-artifact@v8
+        with:
+          name: npm-package
+          path: ${{ runner.temp }}/npm-package
 
       - name: Publish package
-        run: npm publish --access public --provenance
+        run: npm publish "$RUNNER_TEMP/npm-package/input-kit.tgz" --access public --provenance --ignore-scripts
