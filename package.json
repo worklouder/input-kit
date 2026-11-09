@@ -54,6 +54,7 @@
     "build": "node scripts/build.mjs",
     "test": "yarn build && node --test",
     "example": "yarn build && node examples/cli.mjs",
+    "release": "node scripts/release.mjs",
     "prepack": "yarn build"
   },
   "dependencies": {
