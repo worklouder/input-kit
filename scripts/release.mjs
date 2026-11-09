@@ -76,17 +76,17 @@ function prepareRelease(args) {
         writeFileSync(packagePath, JSON.stringify(manifest, null, 2) + '\n');
         runReleaseChecks();
         run('git', ['add', 'package.json']);
-        run('git', ['commit', '-m', 'chore(release): ' + tag]);
+        run('git', ['commit', '-m', 'chore(release): bump version to ' + tag]);
         committed = true;
 
         if (push) {
-            run('git', ['push', '--set-upstream', remote, branch]);
+            run('git', ['push', '--no-follow-tags', '--set-upstream', remote, branch]);
             console.log(
                 'Open a pull request: https://github.com/worklouder/input-kit/compare/' +
                     releaseBranch + '...' + encodeURIComponent(branch) + '?expand=1',
             );
         } else {
-            console.log('Release branch created locally. Push it with: git push -u origin ' + branch);
+            console.log('Release branch created locally. Push it with: git push --no-follow-tags -u origin ' + branch);
         }
     } catch (error) {
         if (!committed) {
@@ -121,10 +121,10 @@ function publishRelease(args) {
 
     run('git', ['tag', '--annotate', tag, '--message', tag]);
     if (push) {
-        run('git', ['push', remote, tag]);
-        console.log('Pushed ' + tag + '. The release workflow will publish it to npm.');
+        run('git', ['push', '--no-follow-tags', remote, 'tag', tag]);
+        console.log('Pushed ' + tag + '. The release workflow requires approval before publishing to npm.');
     } else {
-        console.log('Created local tag ' + tag + '. Push it with: git push origin ' + tag);
+        console.log('Created local tag ' + tag + '. Push it with: git push --no-follow-tags origin tag ' + tag);
     }
 }
 

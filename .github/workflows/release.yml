@@ -12,10 +12,12 @@ permissions:
 concurrency:
   group: npm-release
   cancel-in-progress: false
+  queue: max
 
 jobs:
   publish:
     name: Publish to npm
+    environment: npm-publish
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
