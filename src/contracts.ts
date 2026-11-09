@@ -92,8 +92,8 @@ export interface SetKeyLightingOptions {
     speed?: number;
 }
 
-/** JSON preset data accepted by the addLayer WebSocket method. */
-export interface Preset {
+/** JSON-compatible layer definition accepted by addLayer. */
+export interface LayerDefinition {
     id: number;
     name: string;
     tags?: string[];
@@ -117,5 +117,5 @@ export interface AddLayerOptions {
     deviceId: number;
     /** Zero-based profile index. */
     profileIndex: number;
-    preset: Preset;
+    definition: LayerDefinition;
 }

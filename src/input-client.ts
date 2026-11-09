@@ -166,12 +166,12 @@ export class InputClient extends EventEmitter {
     }
 
     public async addLayer(options: AddLayerOptions): Promise<{ added: true }> {
-        const { deviceId, profileIndex, preset } = options;
+        const { deviceId, profileIndex, definition } = options;
         assertDeviceId(deviceId);
         assertProfileIndex(profileIndex);
         const result = await this.transport.request<unknown>(
             'addLayer',
-            { deviceId, profileIndex, preset },
+            { deviceId, profileIndex, definition },
             this.addLayerTimeoutMs,
         );
         if (!isRecord(result) || result.added !== true) {

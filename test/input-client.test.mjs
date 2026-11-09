@@ -35,7 +35,7 @@ const lighting = { deviceId: 7, identifier: 'example-key', isRegex: false, color
 const addLayerOptions = {
     deviceId: 7,
     profileIndex: 0,
-    preset: {
+    definition: {
         id: 1,
         name: 'Example',
         os: [],
@@ -80,9 +80,9 @@ function respond({ peer, request }, result) {
 
 test('sends the current request literals and parameter shapes through the public API', { timeout: 10_000 }, async (t) => {
     const { client, server } = await connect(t, { requestTimeoutMs: 1_000 });
-    const presetWithMetadata = {
+    const definitionWithMetadata = {
         ...addLayerOptions,
-        preset: { ...addLayerOptions.preset, metadata: { example: true } },
+        definition: { ...addLayerOptions.definition, metadata: { example: true } },
     };
     const cases = [
         ['requestAuthorization', { applicationName: 'Example Integration' }, credentials, () => client.requestAuthorization()],
@@ -103,12 +103,12 @@ test('sends the current request literals and parameter shapes through the public
         [
             'addLayer',
             {
-                deviceId: presetWithMetadata.deviceId,
-                profileIndex: presetWithMetadata.profileIndex,
-                preset: presetWithMetadata.preset,
+                deviceId: definitionWithMetadata.deviceId,
+                profileIndex: definitionWithMetadata.profileIndex,
+                definition: definitionWithMetadata.definition,
             },
             { added: true },
-            () => client.addLayer({ ...presetWithMetadata, extra: true }),
+            () => client.addLayer({ ...definitionWithMetadata, extra: true }),
         ],
     ];
     for (const [index, [method, params, result, call]] of cases.entries()) {
@@ -250,7 +250,10 @@ test('serializes requests and starts response timers after queueing', { timeout:
 
 test('limits the entire outbound JSON frame to 512 KiB measured in UTF-8', { timeout: 5_000 }, async (t) => {
     const { client, server, requests } = await connect(t);
-    const options = { ...addLayerOptions, preset: { ...addLayerOptions.preset, name: '' } };
+    const options = {
+        ...addLayerOptions,
+        definition: { ...addLayerOptions.definition, name: '' },
+    };
     const emptyFrame = JSON.stringify({
         jsonrpc: '2.0',
         id: 1,
@@ -258,11 +261,11 @@ test('limits the entire outbound JSON frame to 512 KiB measured in UTF-8', { tim
         params: {
             deviceId: options.deviceId,
             profileIndex: options.profileIndex,
-            preset: options.preset,
+            definition: options.definition,
         },
     });
     const budget = maxPayload - Buffer.byteLength(emptyFrame);
-    options.preset.name = 'é'.repeat(Math.floor(budget / 2)) + 'a'.repeat(budget % 2);
+    options.definition.name = 'é'.repeat(Math.floor(budget / 2)) + 'a'.repeat(budget % 2);
 
     const incoming = nextRequest(server);
     const result = client.addLayer(options);
@@ -271,14 +274,14 @@ test('limits the entire outbound JSON frame to 512 KiB measured in UTF-8', { tim
     assert.deepEqual(frame.request.params, {
         deviceId: options.deviceId,
         profileIndex: options.profileIndex,
-        preset: options.preset,
+        definition: options.definition,
     });
     respond(frame, { added: true });
     await result;
 
-    options.preset.name += 'a';
+    options.definition.name += 'a';
     await assert.rejects(client.addLayer(options), { name: 'RangeError', message: /512 KiB/ });
-    options.preset.name = 'a'.repeat(budget + 1);
+    options.definition.name = 'a'.repeat(budget + 1);
     await assert.rejects(client.addLayer(options), { name: 'RangeError', message: /512 KiB/ });
     assert.equal(requests.length, 1);
 });
@@ -341,17 +344,25 @@ test('rejects malformed JSON-RPC errors and missing results with InputProtocolEr
 
 test('rejects malformed DeviceInfo results and notifications with InputProtocolError', { timeout: 5_000 }, async (t) => {
     const { client, server, peer } = await connect(t);
-    const invalidDeviceInfo = { ...deviceInfo, connectionType: 'hid' };
-    const incoming = nextRequest(server);
-    const failure = assert.rejects(client.getDeviceInfo(7), InputProtocolError);
-    respond(await incoming, invalidDeviceInfo);
-    await failure;
+    const invalidDeviceInfoResults = [
+        { ...deviceInfo, connectionType: 'hid' },
+        {
+            ...deviceInfo,
+            deviceStatus: { ...deviceInfo.deviceStatus, selectedLayerIndex: 0 },
+        },
+    ];
+    for (const invalidDeviceInfo of invalidDeviceInfoResults) {
+        const incoming = nextRequest(server);
+        const failure = assert.rejects(client.getDeviceInfo(7), InputProtocolError);
+        respond(await incoming, invalidDeviceInfo);
+        await failure;
+    }
 
     const protocolError = once(client, 'protocolError');
     peer.send(JSON.stringify({
         jsonrpc: '2.0',
         method: 'deviceInfoChanged',
-        params: { deviceId: 7, deviceInfo: { ...deviceInfo, deviceStatus: { selectedLayerIndex: -1 } } },
+        params: { deviceId: 7, deviceInfo: { ...deviceInfo, deviceStatus: { selectedLayerIndex: 0 } } },
     }));
     assert.ok((await protocolError)[0] instanceof InputProtocolError);
 });

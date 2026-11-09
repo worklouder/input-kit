@@ -136,7 +136,7 @@ function parseDeviceStatus(value: unknown): DeviceStatus | undefined {
         !isRecord(value) ||
         (value.firmwareVersion !== undefined && typeof value.firmwareVersion !== 'string') ||
         !isOptionalNonNegativeSafeInteger(value.selectedProfileIndex) ||
-        !isOptionalNonNegativeSafeInteger(value.selectedLayerIndex) ||
+        !isOptionalPositiveSafeInteger(value.selectedLayerIndex) ||
         (value.batteryPercentage !== undefined &&
             (typeof value.batteryPercentage !== 'number' ||
                 !Number.isFinite(value.batteryPercentage) ||
@@ -161,4 +161,8 @@ function isOptionalNonNegativeSafeInteger(value: unknown): value is number | und
         value === undefined ||
         (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0)
     );
+}
+
+function isOptionalPositiveSafeInteger(value: unknown): value is number | undefined {
+    return value === undefined || isPositiveSafeInteger(value);
 }

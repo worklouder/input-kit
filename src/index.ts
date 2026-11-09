@@ -19,7 +19,7 @@ export type {
     InputClientEvents,
     InputClientOptions,
     InputNotification,
+    LayerDefinition,
     LoopbackHost,
     AuthorizationCredentials,
-    Preset,
 } from './contracts.js';

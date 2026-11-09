@@ -143,7 +143,7 @@ function printDeviceState(deviceId, deviceInfo) {
     const profileIndex = Number.isSafeInteger(status.selectedProfileIndex)
         ? status.selectedProfileIndex
         : 'unknown';
-    const layerIndex = Number.isSafeInteger(status.selectedLayerIndex)
+    const layerIndex = Number.isSafeInteger(status.selectedLayerIndex) && status.selectedLayerIndex > 0
         ? status.selectedLayerIndex
         : 'unknown';
     console.log(

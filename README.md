@@ -4,14 +4,21 @@ InputKit is a Node.js client library for JavaScript and TypeScript applications 
 
 Input must be running for a client to connect. On the first connection, call `requestAuthorization()` to ask the user to approve the application. Store the returned credentials in your application's secure storage.
 
-## Install and build locally
+## Installation
 
-The npm package is not published yet. From this repository, run:
+Install InputKit with Yarn:
 
-    yarn install
-    yarn build
+    yarn add @worklouder/input-kit
 
-Run `yarn test` to test the built package against a local WebSocket server.
+Or with npm:
+
+    npm install @worklouder/input-kit
+
+InputKit requires Node.js 22 or later.
+
+## Local development
+
+From this repository, run `yarn install` followed by `yarn build`. Run `yarn test` to build the package and test it against a local WebSocket server.
 
 ## Quick start
 

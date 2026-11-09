@@ -127,17 +127,17 @@ When `isRegex` is false, `identifier` must be 1 to 128 UTF-16 code units with no
 
 ### `addLayer(options: AddLayerOptions): Promise<{ added: true }>`
 
-Adds the supplied preset and its referenced actions to an existing profile on the device.
+Adds the supplied layer definition and its referenced actions to an existing profile on the device.
 
 ```ts
 interface AddLayerOptions {
   deviceId: number;
   profileIndex: number; // zero-based
-  preset: Preset;
+  definition: LayerDefinition;
 }
 ```
 
-`preset` is JSON-compatible and includes `id`, `name`, `os`, `keyboardLayoutTypes`, `devices`, `layer`, `actions`, `actionGroups`, `multiactions`, and `multiactionGroups`. Smart Action fields and descriptive metadata are optional. The preset must be compatible with the target device and profile. The request can fail if the key layout is malformed, keycodes are unknown, the preset contains command Smart Actions, the profile already has six layers, or another configuration change conflicts with the request.
+`definition` is JSON-compatible and includes `id`, `name`, `os`, `keyboardLayoutTypes`, `devices`, `layer`, `actions`, `actionGroups`, `multiactions`, and `multiactionGroups`. Smart Action fields and descriptive metadata are optional. The definition must be compatible with the target device and profile. The request can fail if the key layout is malformed, keycodes are unknown, the definition contains command Smart Actions, the profile already has six layers, or another configuration change conflicts with the request.
 
 To select a profile and layer after adding a layer, call `setActiveProfileLayer` with the desired indexes.
 
