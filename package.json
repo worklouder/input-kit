@@ -1,7 +1,7 @@
 {
   "name": "@worklouder/input-kit",
   "version": "0.1.0",
-  "description": "Node.js client library for Work Louder Input",
+  "description": "Dependency-free JavaScript client library for Work Louder Input",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -17,7 +17,8 @@
     "websocket",
     "client",
     "hardware",
-    "macropad"
+    "macropad",
+    "zero-dependency"
   ],
   "type": "module",
   "main": "./dist/cjs/index.js",
@@ -44,7 +45,7 @@
   ],
   "sideEffects": false,
   "engines": {
-    "node": ">=22"
+    "node": ">=22.4.0"
   },
   "packageManager": "yarn@1.22.22",
   "publishConfig": {
@@ -57,12 +58,9 @@
     "release": "node scripts/release.mjs",
     "prepack": "yarn build"
   },
-  "dependencies": {
-    "ws": "^8.21.3"
-  },
   "devDependencies": {
     "@types/node": "^24.9.0",
-    "@types/ws": "^8.18.1",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "ws": "^8.21.3"
   }
 }

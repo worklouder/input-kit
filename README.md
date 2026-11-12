@@ -1,6 +1,6 @@
 # InputKit
 
-InputKit is a Node.js client library for JavaScript and TypeScript applications that connect to the local Input WebSocket API. It supports ESM and CommonJS on Node.js 22 and later.
+InputKit is a JavaScript client library for JavaScript and TypeScript applications that connect to the local Input WebSocket API. It has no runtime dependencies and uses the standard global `WebSocket`, so it runs on Node.js 22.4 and later and on any runtime with a standard `WebSocket`. It ships ESM and CommonJS builds.
 
 Input must be running for a client to connect. On the first connection, call `requestAuthorization()` to ask the user to approve the application. Store the returned credentials in your application's secure storage.
 
@@ -14,11 +14,11 @@ Or with npm:
 
     npm install @worklouder/input-kit
 
-InputKit requires Node.js 22 or later.
+On Node.js, InputKit requires version 22.4 or later, the first release with a stable global `WebSocket`. Other runtimes need a standard global `WebSocket` and `TextEncoder`; `connect()` rejects with `InputConnectionError` if `WebSocket` is missing.
 
 ## Local development
 
-From this repository, run `yarn install` followed by `yarn build`. Run `yarn test` to build the package and test it against a local WebSocket server.
+From this repository, run `yarn install` followed by `yarn build`. Run `yarn test` to build the package and test it against a local WebSocket server. The `ws` package is a development dependency used only by that test server.
 
 ## Quick start
 
@@ -51,6 +51,8 @@ const { InputClient } = require('@worklouder/input-kit');
 
 ESM and CommonJS load separate copies of the exported classes. When using `instanceof`, get the constructor from the same entry point as the value being checked.
 
+`InputClient` uses a small built-in typed event emitter with `on`, `once`, `off`, and `emit`. It is not a Node.js `EventEmitter`, so helpers such as `events.once()` from `node:events` do not work with it; wrap `input.once()` in a promise instead.
+
 ## Example CLI
 
 With Input running, run `yarn example` to request authorization or authenticate, print device and active profile/layer information, and watch events. Run `yarn example devices` to print the current state and exit. The CLI saves its demo token as a local plaintext JSON file; production integrations should use operating system secure credential storage.
@@ -69,4 +71,6 @@ InputKit sends one request at a time with at least 400 ms between sends and caps
 
 This proof of concept follows the current pre-production Input WebSocket API. It connects only to loopback hosts, at `ws://127.0.0.1:19147/input` by default. Input supports the WebSocket API for Creator Micro V2 and Codex Micro when the device is connected and its keymap is ready. The protocol can change before production.
 
-Authorization returns a bearer token once. Do not log it or commit it. Authenticate with the same connection origin you used for authorization. Node.js clients connect without an `Origin` header by default.
+Authorization returns a bearer token once. Do not log it or commit it. Authenticate with the same connection origin you used for authorization. Node.js clients connect without an `Origin` header. Browsers always send the page's origin, and Input ties authorization to the origin, so a browser application needs its own pairing; credentials from a Node.js pairing do not carry over.
+
+The standard `WebSocket` client offers `permessage-deflate` compression and cannot be configured not to. Input declines the offer, so messages are sent uncompressed.

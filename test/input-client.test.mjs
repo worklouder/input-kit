@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
+import { createServer } from 'node:net';
 import test from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import { WebSocketServer } from 'ws';
@@ -54,7 +55,9 @@ async function connect(t, options = {}) {
     await once(server, 'listening');
     const client = new InputClient({ applicationName: 'Example Integration', port: server.address().port, ...options });
     const requests = [];
-    server.on('connection', (peer) => {
+    const upgradeRequests = [];
+    server.on('connection', (peer, request) => {
+        upgradeRequests.push(request);
         peer.on('message', (data, binary) => {
             const frame = { peer, bytes: data.length, binary, request: JSON.parse(data), receivedAt: performance.now() };
             requests.push(frame);
@@ -66,7 +69,12 @@ async function connect(t, options = {}) {
         await Promise.all([client.close(), new Promise((resolve) => server.close(resolve))]);
     });
     const [peer] = await Promise.all([once(server, 'connection').then(([socket]) => socket), client.connect()]);
-    return { client, server, peer, requests };
+    return { client, server, peer, requests, upgradeRequests };
+}
+
+// InputClient is not a Node.js EventEmitter, so node:events once() cannot be used with it.
+function nextEvent(emitter, eventName) {
+    return new Promise((resolve) => emitter.once(eventName, (event) => resolve([event])));
 }
 
 async function nextRequest(server) {
@@ -144,8 +152,8 @@ test('normalizes application names and rejects unsupported Unicode characters', 
 test('decodes typed notifications and forwards valid wire notifications', { timeout: 5_000 }, async (t) => {
     const { client, peer } = await connect(t);
     async function notify(method, params, eventName) {
-        const generic = once(client, 'notification');
-        const typed = eventName && once(client, eventName);
+        const generic = nextEvent(client, 'notification');
+        const typed = eventName && nextEvent(client, eventName);
         peer.send(JSON.stringify({ jsonrpc: '2.0', method, params }));
         assert.deepEqual(await generic, [{ method, params }]);
         if (typed) assert.deepEqual(await typed, [params]);
@@ -169,7 +177,7 @@ test('decodes typed notifications and forwards valid wire notifications', { time
         ]),
     ];
     for (const [method, params] of invalid) {
-        const protocolError = once(client, 'protocolError');
+        const protocolError = nextEvent(client, 'protocolError');
         peer.send(JSON.stringify({ jsonrpc: '2.0', method, params }));
         const [error] = await protocolError;
         assert.ok(error instanceof InputProtocolError);
@@ -358,7 +366,7 @@ test('rejects malformed DeviceInfo results and notifications with InputProtocolE
         await failure;
     }
 
-    const protocolError = once(client, 'protocolError');
+    const protocolError = nextEvent(client, 'protocolError');
     peer.send(JSON.stringify({
         jsonrpc: '2.0',
         method: 'deviceInfoChanged',
@@ -388,7 +396,7 @@ test('rejects in-flight and queued requests on disconnect', { timeout: 5_000 }, 
     const inFlight = assert.rejects(client.getDevices(), InputConnectionError);
     const queued = assert.rejects(client.setKeyLighting(lighting), InputConnectionError);
     await incoming;
-    const disconnected = once(client, 'disconnected');
+    const disconnected = nextEvent(client, 'disconnected');
     peer.close(1008, 'Test disconnect');
     assert.deepEqual(await disconnected, [{ code: 1008, reason: 'Test disconnect' }]);
     await Promise.all([inFlight, queued]);
@@ -422,4 +430,139 @@ test('discards a scheduled send on close and isolates requests on the replacemen
     assert.deepEqual(await fresh, deviceInfo);
     await delay(450);
     assert.deepEqual(requests.map(({ request }) => request.method), ['getDevices', 'getDeviceInfo']);
+});
+
+// Returns a loopback port that was free a moment ago, so tests never reach a running Input.
+async function unusedPort() {
+    const probe = createServer();
+    await new Promise((resolve) => probe.listen(0, '127.0.0.1', resolve));
+    const { port } = probe.address();
+    await new Promise((resolve) => probe.close(resolve));
+    return port;
+}
+
+test('rejects with an actionable error when Input is not listening', { timeout: 5_000 }, async () => {
+    const port = await unusedPort();
+    const client = new InputClient({ applicationName: 'Example Integration', port });
+    await assert.rejects(client.connect(), (error) => {
+        assert.ok(error instanceof InputConnectionError);
+        assert.match(error.message, /Could not connect to Input at ws:\/\/127\.0\.0\.1:\d+\/input/);
+        assert.match(error.message, /Check that Input is open/);
+        return true;
+    });
+    assert.equal(client.connected, false);
+});
+
+// A TCP server that accepts connections but never completes the WebSocket upgrade.
+async function stalledServer(t) {
+    const sockets = new Set();
+    const server = createServer((socket) => {
+        sockets.add(socket);
+        socket.on('close', () => sockets.delete(socket));
+    });
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    t.after(async () => {
+        for (const socket of sockets) socket.destroy();
+        await new Promise((resolve) => server.close(resolve));
+    });
+    return server;
+}
+
+test('times out the WebSocket handshake after 5 seconds', { timeout: 10_000 }, async (t) => {
+    const server = await stalledServer(t);
+    const client = new InputClient({ applicationName: 'Example Integration', port: server.address().port });
+    const startedAt = performance.now();
+    await assert.rejects(client.connect(), (error) => {
+        assert.ok(error instanceof InputConnectionError);
+        assert.match(error.message, /Timed out after 5 seconds connecting to Input/);
+        return true;
+    });
+    const elapsed = performance.now() - startedAt;
+    assert.ok(elapsed >= 4_900 && elapsed < 7_000, 'handshake should time out after about 5 seconds');
+    assert.equal(client.connected, false);
+    await client.close();
+});
+
+test('close() during a stalled handshake rejects connect() and resolves promptly', { timeout: 5_000 }, async (t) => {
+    const server = await stalledServer(t);
+    const client = new InputClient({ applicationName: 'Example Integration', port: server.address().port });
+    const disconnected = nextEvent(client, 'disconnected');
+    const connecting = assert.rejects(client.connect(), /closed before it opened/);
+    await delay(100);
+    await client.close();
+    await connecting;
+    assert.deepEqual(await disconnected, [{ code: 1006, reason: '' }]);
+    assert.equal(client.connected, false);
+
+    // A fresh connect() starts a new handshake instead of reusing the aborted one.
+    const retry = assert.rejects(client.connect(), /closed before it opened/);
+    await client.close();
+    await retry;
+});
+
+test('connects without an Origin header', { timeout: 5_000 }, async (t) => {
+    const { upgradeRequests } = await connect(t);
+    assert.equal(upgradeRequests.length, 1);
+    assert.equal(upgradeRequests[0].headers.origin, undefined);
+});
+
+test('closes the connection with a protocolError when Input sends a binary frame', { timeout: 5_000 }, async (t) => {
+    const { client, peer } = await connect(t);
+    const protocolError = nextEvent(client, 'protocolError');
+    const disconnected = nextEvent(client, 'disconnected');
+    const peerClosed = once(peer, 'close');
+    peer.send(Buffer.from(JSON.stringify({ jsonrpc: '2.0', method: 'devicesUpdated', params: { devices: [] } })));
+
+    const [error] = await protocolError;
+    assert.ok(error instanceof InputProtocolError);
+    assert.match(error.message, /binary frame/);
+    const [code, reason] = await peerClosed;
+    assert.equal(code, 4003);
+    assert.equal(reason.toString('utf8'), 'Text messages only');
+    assert.deepEqual(await disconnected, [{ code: 4003, reason: 'Text messages only' }]);
+    assert.equal(client.connected, false);
+});
+
+test('reports the close code and reason in disconnected', { timeout: 5_000 }, async (t) => {
+    const { client, peer } = await connect(t);
+    const serverClose = nextEvent(client, 'disconnected');
+    peer.close(4321, 'Input is shutting down \u2014 caf\u00e9');
+    assert.deepEqual(await serverClose, [{ code: 4321, reason: 'Input is shutting down \u2014 caf\u00e9' }]);
+
+    await client.connect();
+    const clientClose = nextEvent(client, 'disconnected');
+    await client.close();
+    assert.deepEqual(await clientClose, [{ code: 1000, reason: 'Client closed connection' }]);
+});
+
+test('rejects with a clear error when the runtime has no global WebSocket', { timeout: 5_000 }, async (t) => {
+    const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'WebSocket');
+    t.after(() => {
+        if (descriptor) Object.defineProperty(globalThis, 'WebSocket', descriptor);
+    });
+    const port = await unusedPort();
+    delete globalThis.WebSocket;
+
+    const client = new InputClient({ applicationName: 'Example Integration', port });
+    await assert.rejects(client.connect(), (error) => {
+        assert.ok(error instanceof InputConnectionError);
+        assert.match(error.message, /no global WebSocket/);
+        return true;
+    });
+    assert.equal(client.connected, false);
+});
+
+test('supports on, once, off, and emit on the typed event emitter', async () => {
+    const client = new InputClient({ applicationName: 'Example Integration', port: await unusedPort() });
+    const seen = [];
+    const persistent = (event) => seen.push(['on', event]);
+    const single = (event) => seen.push(['once', event]);
+    assert.equal(client.on('notification', persistent), client);
+    assert.equal(client.once('notification', single), client);
+    assert.equal(client.emit('notification', 1), true);
+    assert.equal(client.emit('notification', 2), true);
+    assert.equal(client.off('notification', persistent), client);
+    assert.equal(client.emit('notification', 3), false);
+    assert.deepEqual(seen, [['on', 1], ['once', 1], ['on', 2]]);
+    assert.throws(() => client.on('notification', null), TypeError);
 });
