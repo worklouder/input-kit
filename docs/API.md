@@ -1,6 +1,6 @@
 # InputKit API Reference
 
-InputKit is a Node.js wrapper around the current Input WebSocket API. Input must be running, and each client must request authorization once before it can authenticate on later connections. The API is pre-production and follows the protocol documented by the Input application.
+InputKit is a dependency-free JavaScript client for the current Input WebSocket API. It runs on Node.js 22.4 and later and on any runtime with a standard global `WebSocket`. Input must be running, and each client must request authorization once before it can authenticate on later connections. The API is pre-production and follows the protocol documented by the Input application.
 
 ## Create a client
 
@@ -23,6 +23,8 @@ const input = new InputClient({
 ### `connect(): Promise<void>`
 
 Opens the WebSocket connection. It does not request authorization or authenticate automatically.
+
+`connect()` rejects with `InputConnectionError` when Input is not listening, when Input closes the connection before it opens, when the WebSocket handshake does not complete within 5 seconds, or when the runtime has no global `WebSocket`. Calling `close()` while connecting rejects the pending `connect()`.
 
 ### `close(): Promise<void>`
 
@@ -49,7 +51,7 @@ Store these credentials in the calling application's secure storage. InputKit do
 
 ### `authenticate(credentials: AuthorizationCredentials): Promise<void>`
 
-Authenticates a previously authorized application. The saved permission must allow the connection origin used by the client.
+Authenticates a previously authorized application. The saved permission must allow the connection origin used by the client. Node.js clients send no `Origin` header. Browsers always send the page's origin, so a browser application needs its own authorization rather than reusing credentials from a Node.js pairing.
 
 ## Requests
 
@@ -145,6 +147,8 @@ To select a profile and layer after adding a layer, call `setActiveProfileLayer`
 
 The server broadcasts events to all authenticated clients; there is no subscription request. Filter by `deviceId` in the application when needed.
 
+`InputClient` provides `on(event, listener)`, `once(event, listener)`, `off(event, listener)`, and `emit(event, payload)`. Each event has a single typed payload, and each method except `emit` returns the client for chaining. `InputClient` is not a Node.js `EventEmitter`: `events.once()` and `removeListener` are not supported, and an emitted error event with no listener does not throw.
+
 ### `devicesUpdated`
 
 Emitted with `{ devices: DeviceSummary[] }` when the ready-device list changes.
@@ -163,9 +167,9 @@ Emitted with `{ method, params }` for every valid server notification. This incl
 
 ### Connection and protocol events
 
-- `disconnected` provides `{ code, reason }` when the current connection closes.
-- `transportError`: a WebSocket transport `Error`.
-- `protocolError`: an `InputProtocolError` when Input sends malformed JSON-RPC or event data.
+- `disconnected` provides `{ code, reason }` when the current connection closes. A connection that fails or is aborted before it opens reports code `1006`.
+- `transportError`: a WebSocket transport `Error`. Standard WebSocket error events carry no detail, so the error message can be generic.
+- `protocolError`: an `InputProtocolError` when Input sends malformed JSON-RPC or event data. If Input sends a binary frame, InputKit also closes the connection with application close code `4003` and reason `Text messages only`.
 
 ## Errors
 

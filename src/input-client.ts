@@ -1,4 +1,4 @@
-import { EventEmitter } from 'node:events';
+import { TypedEventEmitter } from './event-emitter.js';
 import { decodeInputNotification } from './notifications.js';
 import { JsonRpcTransport } from './transport/json-rpc-transport.js';
 import { InputProtocolError } from './errors.js';
@@ -31,7 +31,7 @@ const MAX_APPLICATION_NAME_LENGTH = 80;
 const DISALLOWED_APPLICATION_NAME_CHARACTERS = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
 
 /** Public client for Input's local WebSocket API. */
-export class InputClient extends EventEmitter {
+export class InputClient extends TypedEventEmitter<InputClientEvents> {
     private readonly applicationName: string;
     private readonly addLayerTimeoutMs: number;
     private readonly transport: JsonRpcTransport;
@@ -77,14 +77,6 @@ export class InputClient extends EventEmitter {
 
     public get connected(): boolean {
         return this.transport.connected;
-    }
-
-    public on<K extends keyof InputClientEvents>(
-        eventName: K,
-        listener: (event: InputClientEvents[K]) => void,
-    ): this;
-    public override on(eventName: string | symbol, listener: (...args: any[]) => void): this {
-        return super.on(eventName, listener);
     }
 
     public connect(): Promise<void> {

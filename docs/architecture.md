@@ -1,9 +1,10 @@
 # Package Architecture
 
-InputKit has two boundaries: the public Node.js client API and the Input WebSocket protocol. The package contains no Electron or private Input application imports.
+InputKit has two boundaries: the public JavaScript client API and the Input WebSocket protocol. The package contains no Electron or private Input application imports and has no runtime dependencies. Source files use only standard JavaScript and web platform globals, so the package runs on Node.js 22.4 and later and on any runtime with a standard global `WebSocket`.
 
 ## Module responsibilities
 
+- `event-emitter.ts` provides the small typed emitter (`on`, `once`, `off`, `emit`) used by `InputClient` and the transport in place of `node:events`.
 - `input-client.ts` exposes the stable, user-facing `InputClient` methods. It translates typed method calls into protocol requests, validates API results, and emits the public event names.
 - `transport/json-rpc-transport.ts` owns the WebSocket connection, JSON-RPC request IDs, UTF-8 framing, request queue, response timeouts, response correlation, and transport failures.
 - `notifications.ts` validates and decodes server notification payloads into typed event data.
@@ -11,6 +12,14 @@ InputKit has two boundaries: the public Node.js client API and the Input WebSock
 - `contracts.ts` defines the public option, request, event, and data types. `LayerDefinition` mirrors the JSON shape accepted by `addLayer` without importing private application code.
 - `errors.ts` defines errors consumers can catch without depending on transport internals.
 - `index.ts` is the package export barrel. Internal transport details stay private.
+
+## Transport
+
+The transport uses `globalThis.WebSocket`, the standard client built into Node.js 22.4+ and browsers, and fails `connect()` with a clear `InputConnectionError` when it is missing. Because the standard client has no handshake timeout option, the transport runs its own 5-second timer. When the timer fires, or `close()` is called while connecting, the transport rejects `connect()`, detaches the socket, reports `disconnected` with code `1006`, and closes the socket without waiting for a `close` event, because some runtimes never deliver one for a socket closed while connecting.
+
+The socket uses `binaryType = 'arraybuffer'`. Text frames arrive as strings; any other message is treated as binary, reported as a `protocolError`, and the connection is closed with application code `4003`. The standard `close()` accepts only `1000` or `3000`–`4999`, so the protocol-level `1003` code cannot be used. Request size is measured with `TextEncoder`.
+
+The standard client always offers `permessage-deflate`; Input declines it. Node.js sends no `Origin` header, while browsers always send one. Input ties authorization to the origin, so a browser needs its own pairing.
 
 ## Request lifecycle
 
