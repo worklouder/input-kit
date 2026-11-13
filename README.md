@@ -69,7 +69,7 @@ InputKit sends one request at a time with at least 400 ms between sends and caps
 
 ## Compatibility and security
 
-This proof of concept follows the current pre-production Input WebSocket API. It connects only to loopback hosts, at `ws://127.0.0.1:19147/input` by default. Input supports the WebSocket API for Creator Micro V2 and Codex Micro when the device is connected and its keymap is ready. The protocol can change before production.
+InputKit connects only to loopback hosts, at `ws://127.0.0.1:19147/input` by default. Input supports the WebSocket API for Creator Micro V2 and Codex Micro when the device is connected and its keymap is ready.
 
 Authorization returns a bearer token once. Do not log it or commit it. Authenticate with the same connection origin you used for authorization. Node.js clients connect without an `Origin` header. Browsers always send the page's origin, and Input ties authorization to the origin, so a browser application needs its own pairing; credentials from a Node.js pairing do not carry over.
 
