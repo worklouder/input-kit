@@ -1,6 +1,6 @@
 {
   "name": "@worklouder/input-kit",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Dependency-free JavaScript client library for Work Louder Input",
   "license": "Apache-2.0",
   "repository": {
