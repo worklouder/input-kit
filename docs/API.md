@@ -1,6 +1,6 @@
 # InputKit API Reference
 
-InputKit is a dependency-free JavaScript client for the current Input WebSocket API. It runs on Node.js 22.4 and later and on any runtime with a standard global `WebSocket`. Input must be running, and each client must request authorization once before it can authenticate on later connections. The API is pre-production and follows the protocol documented by the Input application.
+InputKit is a dependency-free JavaScript client for the current Input WebSocket API. It runs on Node.js 22.4 and later and on any runtime with a standard global `WebSocket`. Input must be running, and each client must request authorization once before it can authenticate on later connections. It follows the protocol documented by the Input application.
 
 ## Create a client
 
