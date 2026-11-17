@@ -8,6 +8,22 @@ export class InputApiError extends Error {
     }
 }
 
+/**
+ * Input rejected a device write because the device's shared rate-limit budget
+ * is used up. The connection stays open and the request can be retried once
+ * earlier requests leave the 10-second window.
+ */
+export class InputDeviceRateLimitError extends InputApiError {
+    public constructor(
+        public readonly method: string,
+        public readonly deviceId: number,
+        message: string,
+    ) {
+        super(-32017, message);
+        this.name = 'InputDeviceRateLimitError';
+    }
+}
+
 export class InputConnectionError extends Error {
     public constructor(
         message: string,

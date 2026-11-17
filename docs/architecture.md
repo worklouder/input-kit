@@ -23,7 +23,7 @@ The standard client always offers `permessage-deflate`; Input declines it. Node.
 
 ## Request lifecycle
 
-The transport checks the serialized frame against Input's 512 KiB limit before queueing it. It holds one active request per connection and spaces sends by at least 400 ms to stay under Input's 30-request limit per rolling 10 seconds. The response timer starts at send time. `InputClient` supplies the 29-second authorization timeout and the configurable 120-second `addLayer` default. The ordinary response timeout defaults to 10 seconds.
+The transport checks the serialized frame against Input's 512 KiB limit before queueing it. It holds one active request per connection and spaces sends by at least 160 ms to stay under Input's 65-request limit per rolling 10 seconds. Requests that `InputClient` sends with a `deviceId` (`setActiveProfileLayer`, `setKeyLighting`, and `addLayer`) are also spaced by at least 250 ms per device, which stays within Input's 40-request BLE and 60-request USB device limits. The queue stays in call order, so a request waiting on its device's spacing also delays later requests. Input error `-32017` on a device request becomes `InputDeviceRateLimitError`. The response timer starts at send time. `InputClient` supplies the 29-second authorization timeout and the configurable 120-second `addLayer` default. The ordinary response timeout defaults to 10 seconds.
 
 Closing or replacing a connection clears its queued requests and any in-flight request. A timeout releases the queue for the next request and reports that the timed-out operation's outcome may be unknown. The transport ignores late responses and never retries requests automatically.
 

@@ -2,6 +2,7 @@ import { TypedEventEmitter } from '../event-emitter.js';
 import {
     InputApiError,
     InputConnectionError,
+    InputDeviceRateLimitError,
     InputProtocolError,
     InputRequestTimeoutError,
 } from '../errors.js';
@@ -28,14 +29,19 @@ const CLOSING = 2;
 const CLOSED = 3;
 
 const utf8Encoder = new TextEncoder();
-// Input allows 30 requests per connection in a rolling 10-second window.
-const REQUEST_SPACING_MS = 400;
+// Input allows 65 requests per connection in a rolling 10-second window.
+const REQUEST_SPACING_MS = 160;
+// Input allows 40 device writes per BLE device (60 per USB device) in a rolling
+// 10-second window, shared by all clients. Pace for the stricter BLE budget.
+const DEVICE_REQUEST_SPACING_MS = 250;
+const DEVICE_RATE_LIMIT_ERROR_CODE = -32017;
 
 interface QueuedRequest {
     id: number;
     method: string;
     frame: string;
     timeoutMs: number;
+    deviceId?: number;
     resolve: (result: unknown) => void;
     reject: (error: Error) => void;
 }
@@ -47,6 +53,12 @@ interface PendingRequest {
 
 interface JsonRpcMessage extends Record<string, unknown> {
     jsonrpc: '2.0';
+}
+
+export interface RequestOptions {
+    timeoutMs?: number;
+    /** Paces the request against the device's rate-limit budget. */
+    deviceId?: number;
 }
 
 export interface JsonRpcTransportOptions {
@@ -67,6 +79,7 @@ export class JsonRpcTransport extends TypedEventEmitter<TransportEvents> {
     private pending?: PendingRequest;
     private sendTimer?: ReturnType<typeof setTimeout>;
     private nextSendAt = 0;
+    private readonly nextDeviceSendAt = new Map<number, number>();
     private readonly requestTimeoutMs: number;
 
     public constructor(options: JsonRpcTransportOptions) {
@@ -199,7 +212,8 @@ export class JsonRpcTransport extends TypedEventEmitter<TransportEvents> {
         await closed;
     }
 
-    public async request<T>(method: string, params?: object, timeoutMs = this.requestTimeoutMs): Promise<T> {
+    public async request<T>(method: string, params?: object, options: RequestOptions = {}): Promise<T> {
+        const { timeoutMs = this.requestTimeoutMs, deviceId } = options;
         const socket = this.socket;
         if (!socket || socket.readyState !== OPEN) {
             throw new InputConnectionError('Connect to Input before making requests');
@@ -221,6 +235,7 @@ export class JsonRpcTransport extends TypedEventEmitter<TransportEvents> {
                 method,
                 frame,
                 timeoutMs,
+                deviceId,
                 resolve: (result) => resolve(result as T),
                 reject,
             });
@@ -235,7 +250,10 @@ export class JsonRpcTransport extends TypedEventEmitter<TransportEvents> {
             return;
         }
 
-        const delay = Math.ceil(this.nextSendAt - performance.now());
+        const sendAt = request.deviceId === undefined
+            ? this.nextSendAt
+            : Math.max(this.nextSendAt, this.nextDeviceSendAt.get(request.deviceId) ?? 0);
+        const delay = Math.ceil(sendAt - performance.now());
         if (delay > 0) {
             this.sendTimer = setTimeout(() => {
                 this.sendTimer = undefined;
@@ -250,7 +268,11 @@ export class JsonRpcTransport extends TypedEventEmitter<TransportEvents> {
             this.rejectRequest(request, new InputRequestTimeoutError(request.method, request.timeoutMs));
         }, request.timeoutMs);
         this.pending = { request, timer };
-        this.nextSendAt = performance.now() + REQUEST_SPACING_MS;
+        const now = performance.now();
+        this.nextSendAt = now + REQUEST_SPACING_MS;
+        if (request.deviceId !== undefined) {
+            this.nextDeviceSendAt.set(request.deviceId, now + DEVICE_REQUEST_SPACING_MS);
+        }
 
         const onSendError = (error: Error): void => {
             this.rejectRequest(
@@ -310,7 +332,13 @@ export class JsonRpcTransport extends TypedEventEmitter<TransportEvents> {
                 this.rejectRequest(request, new InputProtocolError('Input sent an invalid RPC error'));
                 return;
             }
-            this.rejectRequest(request, new InputApiError(message.error.code, message.error.message));
+            const { code, message: errorMessage } = message.error;
+            this.rejectRequest(
+                request,
+                code === DEVICE_RATE_LIMIT_ERROR_CODE && request.deviceId !== undefined
+                    ? new InputDeviceRateLimitError(request.method, request.deviceId, errorMessage)
+                    : new InputApiError(code, errorMessage),
+            );
             return;
         }
 
@@ -348,6 +376,8 @@ export class JsonRpcTransport extends TypedEventEmitter<TransportEvents> {
         clearTimeout(this.sendTimer);
         this.sendTimer = undefined;
         this.nextSendAt = 0;
+        // Device IDs can change after reconnection.
+        this.nextDeviceSendAt.clear();
         if (this.pending) {
             clearTimeout(this.pending.timer);
             this.pending.request.reject(error);

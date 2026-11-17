@@ -2,6 +2,7 @@ export { InputClient } from './input-client.js';
 export {
     InputApiError,
     InputConnectionError,
+    InputDeviceRateLimitError,
     InputProtocolError,
     InputRequestTimeoutError,
 } from './errors.js';

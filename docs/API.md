@@ -57,7 +57,11 @@ Authenticates a previously authorized application. The saved permission must all
 
 All request methods require an open, authenticated connection, except `requestAuthorization` and `authenticate`.
 
-InputKit sends requests in call order, with one request awaiting a response at a time and at least 400 ms between sends. This keeps traffic below Input's limit of 30 requests per rolling 10 seconds per connection. The response timeout begins when the frame is sent, so time spent in the queue is separate. InputKit measures the entire serialized request in UTF-8 and rejects any message larger than 512 KiB before sending it. InputKit never retries requests automatically.
+InputKit sends requests in call order, with one request awaiting a response at a time and at least 160 ms between sends. This keeps traffic below Input's limit of 65 requests per rolling 10 seconds per connection. Exceeding that limit makes Input close the connection with code `1008`. Every request counts, including `requestAuthorization` and `authenticate`.
+
+Input also limits `setActiveProfileLayer`, `setKeyLighting`, and `addLayer` per device: 60 requests per rolling 10 seconds for a USB device and 40 for a BLE device. Each device has one budget shared by these three methods and by every connected client. `getDevices` and `getDeviceInfo` do not count. InputKit spaces these requests at least 250 ms apart for each device, which keeps a single client within the BLE limit. Other applications using the same device share its budget, so a request can still fail with `InputDeviceRateLimitError`. Requests that reach a device and then fail, for example because an identifier or layer is not found, still use the budget.
+
+The response timeout begins when the frame is sent, so time spent in the queue is separate. InputKit measures the entire serialized request in UTF-8 and rejects any message larger than 512 KiB before sending it. InputKit never retries requests automatically.
 
 ### `getDevices(): Promise<DeviceSummary[]>`
 
@@ -176,6 +180,7 @@ Emitted with `{ method, params }` for every valid server notification. This incl
 Request promises reject with these exported error classes:
 
 - `InputApiError`: Input returned an error code and message. The numeric protocol code is available as `code`.
+- `InputDeviceRateLimitError`: a subclass of `InputApiError` with `code` `-32017`, raised when the device's shared rate-limit budget is used up. It exposes the wire `method` and `deviceId`. The connection stays open and the request is safe to retry once earlier requests leave the 10-second window. Wait at least 250 ms, back off if it repeats, and remember that retries count toward the per-connection limit.
 - `InputConnectionError`: the socket was unavailable, closed during a request, or could not send the request.
 - `InputRequestTimeoutError` reports an expired response timeout. The operation outcome may be unknown because Input could still complete it. The error exposes the wire `method` and `timeoutMs`.
 - `InputProtocolError`: Input returned a response with an invalid shape.
