@@ -34,6 +34,7 @@ const REQUEST_SPACING_MS = 160;
 // Input allows 40 device writes per BLE device (60 per USB device) in a rolling
 // 10-second window, shared by all clients. Pace for the stricter BLE budget.
 const DEVICE_REQUEST_SPACING_MS = 250;
+const DEVICE_RATE_LIMITED_METHODS = new Set(['setActiveProfileLayer', 'setKeyLighting', 'addLayer']);
 const DEVICE_RATE_LIMIT_ERROR_CODE = -32017;
 
 interface QueuedRequest {
@@ -53,12 +54,6 @@ interface PendingRequest {
 
 interface JsonRpcMessage extends Record<string, unknown> {
     jsonrpc: '2.0';
-}
-
-export interface RequestOptions {
-    timeoutMs?: number;
-    /** Paces the request against the device's rate-limit budget. */
-    deviceId?: number;
 }
 
 export interface JsonRpcTransportOptions {
@@ -212,8 +207,7 @@ export class JsonRpcTransport extends TypedEventEmitter<TransportEvents> {
         await closed;
     }
 
-    public async request<T>(method: string, params?: object, options: RequestOptions = {}): Promise<T> {
-        const { timeoutMs = this.requestTimeoutMs, deviceId } = options;
+    public async request<T>(method: string, params?: object, timeoutMs = this.requestTimeoutMs): Promise<T> {
         const socket = this.socket;
         if (!socket || socket.readyState !== OPEN) {
             throw new InputConnectionError('Connect to Input before making requests');
@@ -228,6 +222,11 @@ export class JsonRpcTransport extends TypedEventEmitter<TransportEvents> {
         if (this.socket !== socket || socket.readyState !== OPEN) {
             throw new InputConnectionError('Input connection changed while preparing the request');
         }
+        // Device writes share a per-device budget with every client.
+        const deviceId = DEVICE_RATE_LIMITED_METHODS.has(method) && isRecord(params) &&
+            typeof params.deviceId === 'number'
+            ? params.deviceId
+            : undefined;
 
         return new Promise<T>((resolve, reject) => {
             this.queue.push({

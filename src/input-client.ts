@@ -91,7 +91,7 @@ export class InputClient extends TypedEventEmitter<InputClientEvents> {
         const result = await this.transport.request<unknown>(
             'requestAuthorization',
             { applicationName: this.applicationName },
-            { timeoutMs: AUTHORIZATION_TIMEOUT_MS },
+            AUTHORIZATION_TIMEOUT_MS,
         );
         if (
             !isRecord(result) ||
@@ -136,7 +136,6 @@ export class InputClient extends TypedEventEmitter<InputClientEvents> {
         const result = await this.transport.request<unknown>(
             'setActiveProfileLayer',
             { deviceId, profileIndex, layerIndex },
-            { deviceId },
         );
         if (!isRecord(result) || result.changed !== true) {
             throw new InputProtocolError('Input returned an invalid setActiveProfileLayer response');
@@ -151,7 +150,7 @@ export class InputClient extends TypedEventEmitter<InputClientEvents> {
         // JSON serialization omits undefined optional fields.
         const params = { deviceId, identifier, isRegex, color, brightness, effect, speed };
         assertKeyLightingOptions(params);
-        const result = await this.transport.request<unknown>('setKeyLighting', params, { deviceId });
+        const result = await this.transport.request<unknown>('setKeyLighting', params);
         if (!isRecord(result) || result.applied !== true) {
             throw new InputProtocolError('Input returned an invalid lighting response');
         }
@@ -165,7 +164,7 @@ export class InputClient extends TypedEventEmitter<InputClientEvents> {
         const result = await this.transport.request<unknown>(
             'addLayer',
             { deviceId, profileIndex, definition },
-            { timeoutMs: this.addLayerTimeoutMs, deviceId },
+            this.addLayerTimeoutMs,
         );
         if (!isRecord(result) || result.added !== true) {
             throw new InputProtocolError('Input returned an invalid addLayer response');
