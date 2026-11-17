@@ -65,7 +65,7 @@ The API reference documents parameters, return values, events, errors, and the c
 
 `setActiveProfileLayer` selects the active profile and layer together. Profile indexes start at `0` and layer indexes start at `1`. `addLayer` adds a layer to a profile while keeping the active selection. Use `getDeviceInfo` to read the reported selection and `deviceInfoChanged` to watch for updates.
 
-InputKit sends one request at a time with at least 400 ms between sends and caps each JSON request at 512 KiB of UTF-8. Response timeouts start at send time and default to 10 seconds for ordinary requests, 29 seconds for `requestAuthorization`, and 120 seconds for `addLayer`. A timeout can leave the operation outcome unknown. InputKit never retries requests automatically.
+InputKit sends one request at a time with at least 160 ms between sends, which stays under Input's limit of 65 requests per 10 seconds per connection. It also spaces `setActiveProfileLayer`, `setKeyLighting`, and `addLayer` at least 250 ms apart for each device, which stays under Input's per-device limits of 60 requests per 10 seconds over USB and 40 over BLE. Other applications share each device's budget, so a device write can still fail with `InputDeviceRateLimitError`, which is safe to retry after a short wait. InputKit caps each JSON request at 512 KiB of UTF-8. Response timeouts start at send time and default to 10 seconds for ordinary requests, 29 seconds for `requestAuthorization`, and 120 seconds for `addLayer`. A timeout can leave the operation outcome unknown. InputKit never retries requests automatically.
 
 ## Compatibility and security
 

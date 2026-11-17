@@ -8,6 +8,7 @@ import {
     InputApiError,
     InputClient,
     InputConnectionError,
+    InputDeviceRateLimitError,
     InputProtocolError,
     InputRequestTimeoutError,
 } from '../dist/index.js';
@@ -251,9 +252,49 @@ test('serializes requests and starts response timers after queueing', { timeout:
     const thirdIncoming = nextRequest(server);
     const info = client.getDeviceInfo(7);
     const third = await thirdIncoming;
-    assert.ok(third.receivedAt - second.receivedAt >= 380, 'requests should be spaced about 400 ms apart');
+    assert.ok(third.receivedAt - second.receivedAt >= 150, 'requests should be spaced about 160 ms apart');
     respond(third, deviceInfo);
     assert.deepEqual(await info, deviceInfo);
+});
+
+test('spaces device writes per device and other requests by the connection spacing',{ timeout: 5_000 }, async (t) => {
+    const { client, server } = await connect(t);
+    server.on('request', (frame) => {
+        const results = { setKeyLighting: { applied: true }, getDeviceInfo: deviceInfo };
+        respond(frame, results[frame.request.method] ?? { changed: true });
+    });
+    const frames = [];
+    server.on('request', (frame) => frames.push(frame));
+    await Promise.all([
+        client.setKeyLighting(lighting),
+        client.getDeviceInfo(7),
+        client.setActiveProfileLayer(selection),
+        client.setKeyLighting({ ...lighting, deviceId: 8 }),
+    ]);
+    const [firstWrite, info, secondWrite, otherDevice] = frames.map(({ receivedAt }) => receivedAt);
+    assert.ok(info - firstWrite >= 150, 'reads should wait for the connection spacing');
+    assert.ok(secondWrite - firstWrite >= 240, 'writes to one device should be spaced about 250 ms apart');
+    assert.ok(otherDevice - secondWrite >= 150, 'other devices should wait for the connection spacing');
+});
+
+test('reports a device rate limit as a retryable InputDeviceRateLimitError', { timeout: 5_000 }, async (t) => {
+    const { client, server } = await connect(t);
+    const incoming = nextRequest(server);
+    const failure = assert.rejects(client.setKeyLighting(lighting), (error) => {
+        assert.ok(error instanceof InputDeviceRateLimitError);
+        assert.ok(error instanceof InputApiError);
+        assert.equal(error.code, -32017);
+        assert.equal(error.method, 'setKeyLighting');
+        assert.equal(error.deviceId, 7);
+        assert.equal(error.message, 'Device rate limit exceeded');
+        return true;
+    });
+    const { peer, request } = await incoming;
+    peer.send(JSON.stringify({
+        jsonrpc: '2.0', id: request.id, error: { code: -32017, message: 'Device rate limit exceeded' },
+    }));
+    await failure;
+    assert.ok(client.connected);
 });
 
 test('limits the entire outbound JSON frame to 512 KiB measured in UTF-8', { timeout: 5_000 }, async (t) => {
