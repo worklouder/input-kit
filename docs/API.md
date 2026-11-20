@@ -143,7 +143,115 @@ interface AddLayerOptions {
 }
 ```
 
-`definition` is JSON-compatible and includes `id`, `name`, `os`, `keyboardLayoutTypes`, `devices`, `layer`, `actions`, `actionGroups`, `multiactions`, and `multiactionGroups`. Smart Action fields and descriptive metadata are optional. The definition must be compatible with the target device and profile. The request can fail if the key layout is malformed, keycodes are unknown, the definition contains command Smart Actions, the profile already has six layers, or another configuration change conflicts with the request.
+`definition` is a JSON-compatible `LayerDefinition`. All of its parts are exported as types.
+
+```ts
+interface LayerDefinition {
+  id: number;
+  name: string;
+  os: number[];                  // 0 macOS, 1 Windows
+  keyboardLayoutTypes: string[];
+  devices: string[];
+  layer: LayerDefinitionLayer;
+  actions: LayerAction[];
+  actionGroups: ActionGroup[];
+  multiactions: LayerMultiaction[];
+  multiactionGroups: ActionGroup[];
+  smartActions?: LayerSmartAction[];
+  smartActionGroups?: ActionGroup[];
+  tags?: string[];
+  description?: string;
+  author?: string;
+  base64Image?: string;
+  previewImg?: string;
+}
+
+interface LayerDefinitionLayer {
+  id: number;           // Input assigns the added layer a new ID
+  name: string;
+  color: string;        // for example '#FF0000'
+  os?: number;          // 0 macOS, 1 Windows; macOS when omitted
+  layout: LayerLayout;
+  lights?: LayerLights; // see Layer lighting
+}
+
+interface LayerLayout {
+  base: LayerKey[][];     // rows of { keycode: string }
+  encoders: LayerKey[][];
+  buttons?: LayerKey[][];
+  joystick?: { type: string; sectors?: { k: string; a1: number; a2: number }[] };
+}
+
+interface LayerAction {
+  id: number;           // referenced by KA_<id> keycodes and group actionIds
+  name: string;
+  color?: string | null;
+  icon?: string;
+  keyInputs: KeyInput[];
+}
+
+interface KeyInput {
+  keycode: string;
+  delay: number;        // milliseconds
+  actionType: number;   // 0 release, 1 press, 2 click
+}
+
+interface LayerMultiaction {
+  id: number;
+  name: string;
+  tap: KeyInput;
+  onHold: KeyInput;
+  doubleTap: KeyInput;
+  tapHold: KeyInput;
+  tappingTerms: number;
+}
+
+interface LayerSmartAction {
+  id: number;
+  name: string;
+  type: string;         // TEXT_STEP, APP_STEP, URL_STEP, or API
+  payload: { text: string } | { url: string } | { name: string; path: string } | { id: string };
+}
+
+interface ActionGroup {
+  id: number;
+  name: string;
+  actionIds: number[];  // IDs defined in the same definition
+  tags?: string[];
+  color?: string;
+}
+```
+
+Fields that take a fixed set of values, such as `os`, `actionType`, and Smart Action `type`, are typed as `number` or `string` so definitions loaded from JSON files stay assignable. InputKit checks the structure and these values before sending and throws a `TypeError` or `RangeError` naming the invalid field, for example `definition.layer.layout.base[0][1].keycode must be a string`. Extra fields are passed through unchanged, except in `lights`.
+
+Input also checks what InputKit cannot: the layout rows must match the target device's key layout, each keycode must exist, and groups may only reference IDs defined in the same definition. The request also fails if the profile already has six layers or another configuration change conflicts with the request. Input reports these as `InputApiError`.
+
+#### Layer lighting
+
+`definition.layer.lights` optionally sets the backlight and underglow of the new layer.
+
+```ts
+interface LayerLights {
+  backlight?: SideLighting;
+  underglow?: SideLighting;
+}
+
+interface SideLighting {
+  effect: number;      // 0 off, 1 solid, 2 snake, 3 rainbow, 4 breath, 5 gradient
+  color?: number;      // 0 to 0xFFFFFF
+  brightness?: number; // 0 to 1
+  speed?: number;      // 0 to 1
+  magic?: number;      // 0 to 1
+}
+```
+
+`lights` must contain at least one side, each side must contain `effect`, and unknown fields are rejected. Effect `6` is only available to `setKeyLighting`.
+
+- When `lights` is omitted, the new layer copies the lighting of the profile's last layer, or uses the device defaults when that layer has none.
+- When only one side is sent, the other side uses the device default.
+- Input fills unset fields as its lighting editor does: `color` (`0xFFFFFF`) and `brightness` (`0.5`) unless the effect is off, and `speed` and `magic` (`0.5`) unless the effect is off or solid.
+
+Devices without lighting, such as Nomad E and Knob models, reject `lights` with `InputApiError` code `-32602`. Omit `lights` for those devices.
 
 To select a profile and layer after adding a layer, call `setActiveProfileLayer` with the desired indexes.
 
