@@ -43,10 +43,15 @@ const addLayerOptions = {
         os: [],
         keyboardLayoutTypes: [],
         devices: [],
-        layer: { name: 'Example', keys: [] },
+        layer: {
+            id: 1,
+            name: 'Example',
+            color: '#FF0000',
+            layout: { base: [[{ keycode: 'KC_A' }, { keycode: 'KA_1' }]], encoders: [[{ keycode: 'KC_NO' }]] },
+        },
         actionGroups: [],
         multiactionGroups: [],
-        actions: [],
+        actions: [{ id: 1, name: 'Copy', keyInputs: [{ keycode: 'KC_C', delay: 0, actionType: 2 }] }],
         multiactions: [],
     },
 };
@@ -226,6 +231,106 @@ test('validates profile, layer, and lighting bounds before sending', { timeout: 
         assert.deepEqual(frame.request.params, options);
         respond(frame, { applied: true });
         assert.deepEqual(await result, { applied: true });
+    }
+});
+
+test('validates the layer definition structure before sending addLayer', { timeout: 5_000 }, async (t) => {
+    const { client, server, requests } = await connect(t);
+    const { definition } = addLayerOptions;
+    const { layer } = definition;
+    const keyInput = { keycode: 'KC_A', delay: 0, actionType: 1 };
+    const multiaction = { id: 2, name: 'Multi', tap: keyInput, onHold: keyInput, doubleTap: keyInput, tapHold: keyInput, tappingTerms: 200 };
+    const invalidDefinitions = [
+        [null, /TypeError: definition must be an object/],
+        [{ ...definition, id: 1.5 }, /definition\.id must be a safe integer/],
+        [{ ...definition, os: [2] }, /definition\.os\[0\] must be 0/],
+        [{ ...definition, devices: 'creator_micro_v2' }, /definition\.devices must be an array/],
+        [{ ...definition, layer: undefined }, /definition\.layer must be an object/],
+        [{ ...definition, layer: { ...layer, id: undefined } }, /definition\.layer\.id/],
+        [{ ...definition, layer: { ...layer, color: 0xff0000 } }, /definition\.layer\.color must be a string/],
+        [{ ...definition, layer: { ...layer, os: 'mac' } }, /definition\.layer\.os must be 0/],
+        [{ ...definition, layer: { ...layer, layout: { base: [] } } }, /definition\.layer\.layout\.encoders must be an array/],
+        [
+            { ...definition, layer: { ...layer, layout: { ...layer.layout, base: [[{ keycode: 'KC_A' }, {}]] } } },
+            /definition\.layer\.layout\.base\[0\]\[1\]\.keycode must be a string/,
+        ],
+        [
+            { ...definition, layer: { ...layer, layout: { ...layer.layout, joystick: { sectors: [{ a1: 0 }] } } } },
+            /definition\.layer\.layout\.joystick\.sectors\[0\]\.k/,
+        ],
+        [
+            { ...definition, actions: [{ id: 1, name: 'Copy', keyInputs: [{ keycode: 'KC_C', delay: '0', actionType: 1 }] }] },
+            /definition\.actions\[0\]\.keyInputs\[0\]\.delay must be a finite number/,
+        ],
+        [{ ...definition, multiactions: [{ ...multiaction, onHold: undefined }] }, /definition\.multiactions\[0\]\.onHold/],
+        [
+            { ...definition, smartActions: [{ id: 3, name: 'Run', type: 'CMD_STEP', payload: { cmd: 'example' } }] },
+            /CMD_STEP is not allowed/,
+        ],
+        [{ ...definition, smartActions: [{ id: 3, name: 'Text', type: 'TEXT', payload: {} }] }, /\.type must be TEXT_STEP/],
+        [{ ...definition, actionGroups: [{ id: 1, name: 'Group', actionIds: ['1'] }] }, /actionGroups\[0\]\.actionIds\[0\]/],
+        [{ ...definition, smartActionGroups: {} }, /definition\.smartActionGroups must be an array/],
+    ];
+    for (const [invalid, error] of invalidDefinitions) {
+        await assert.rejects(client.addLayer({ ...addLayerOptions, definition: invalid }), error);
+    }
+    assert.equal(requests.length, 0);
+
+    const complete = {
+        ...definition,
+        os: [0, 1],
+        tags: ['example'],
+        layer: { ...layer, os: 1, layout: { ...layer.layout, buttons: [[]], joystick: { type: 'VENDOR', sectors: [{ k: 'KC_UP', a1: 0, a2: 90 }] } } },
+        multiactions: [multiaction],
+        smartActions: [{ id: 3, name: 'Docs', type: 'URL_STEP', payload: { url: 'https://example.com' } }],
+        actionGroups: [{ id: 1, name: 'Group', actionIds: [1], tags: [] }],
+        smartActionGroups: [],
+    };
+    const incoming = nextRequest(server);
+    const result = client.addLayer({ ...addLayerOptions, definition: complete });
+    const frame = await incoming;
+    assert.deepEqual(frame.request.params.definition, complete);
+    respond(frame, { added: true });
+    assert.deepEqual(await result, { added: true });
+});
+
+test('validates layer lighting before sending addLayer', { timeout: 5_000 }, async (t) => {
+    const { client, server, requests } = await connect(t);
+    const withLights = (lights) => ({
+        ...addLayerOptions,
+        definition: { ...addLayerOptions.definition, layer: { ...addLayerOptions.definition.layer, lights } },
+    });
+    const invalidLights = [
+        [null, /layer\.lights must be an object/],
+        [{}, /backlight, underglow, or both/],
+        [{ backlight: { effect: 1 }, sides: 2 }, /layer\.lights\.sides/],
+        [{ underglow: 1 }, /layer\.lights\.underglow must be an object/],
+        [{ backlight: {} }, /backlight\.effect/],
+        ...[-1, 6, 1.5, '1'].map((effect) => [{ backlight: { effect } }, /backlight\.effect/]),
+        [{ backlight: { effect: 1, hue: 0 } }, /backlight\.hue/],
+        ...[-1, 0x1000000, 0.5, '0'].map((color) => [{ underglow: { effect: 1, color } }, /underglow\.color/]),
+        ...['brightness', 'speed', 'magic'].flatMap((field) =>
+            [-0.1, 1.1, NaN, '0.5'].map((value) => [{ backlight: { effect: 2, [field]: value } }, new RegExp(field)]),
+        ),
+    ];
+    for (const [lights, error] of invalidLights) {
+        await assert.rejects(client.addLayer(withLights(lights)), error);
+    }
+    assert.equal(requests.length, 0);
+
+    const validLights = [
+        { backlight: { effect: 0 } },
+        { underglow: { effect: 5, color: 0xffffff, brightness: 1, speed: 0, magic: 0.5 } },
+        { backlight: { effect: 1, color: 0 }, underglow: { effect: 3 } },
+    ];
+    for (const lights of validLights) {
+        const options = withLights(lights);
+        const incoming = nextRequest(server);
+        const result = client.addLayer(options);
+        const frame = await incoming;
+        assert.deepEqual(frame.request.params, options);
+        respond(frame, { added: true });
+        assert.deepEqual(await result, { added: true });
     }
 });
 
