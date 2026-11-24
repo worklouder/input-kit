@@ -8,7 +8,7 @@ InputKit has two boundaries: the public JavaScript client API and the Input WebS
 - `input-client.ts` exposes the stable, user-facing `InputClient` methods. It translates typed method calls into protocol requests, validates API results, and emits the public event names.
 - `transport/json-rpc-transport.ts` owns the WebSocket connection, JSON-RPC request IDs, UTF-8 framing, request queue, response timeouts, response correlation, and transport failures.
 - `notifications.ts` validates and decodes server notification payloads into typed event data.
-- `validation.ts` contains boundary checks for IDs, indexes, device summaries, API identifiers, and lighting parameters.
+- `validation.ts` contains boundary checks for IDs, indexes, device summaries, API identifiers, lighting parameters, and `addLayer` definitions. The definition check mirrors the structural check in Input's `layer_definition_import.ts`, so the two must change together.
 - `contracts.ts` defines the public option, request, event, and data types. `LayerDefinition` mirrors the JSON shape accepted by `addLayer` without importing private application code.
 - `errors.ts` defines errors consumers can catch without depending on transport internals.
 - `index.ts` is the package export barrel. Internal transport details stay private.

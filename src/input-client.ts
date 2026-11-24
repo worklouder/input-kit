@@ -15,6 +15,7 @@ import type {
 import {
     assertDeviceId,
     assertKeyLightingOptions,
+    assertLayerDefinition,
     assertLayerIndex,
     assertProfileIndex,
     isRecord,
@@ -161,6 +162,7 @@ export class InputClient extends TypedEventEmitter<InputClientEvents> {
         const { deviceId, profileIndex, definition } = options;
         assertDeviceId(deviceId);
         assertProfileIndex(profileIndex);
+        assertLayerDefinition(definition);
         const result = await this.transport.request<unknown>(
             'addLayer',
             { deviceId, profileIndex, definition },
