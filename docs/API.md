@@ -226,6 +226,8 @@ Fields that take a fixed set of values, such as `os`, `actionType`, and Smart Ac
 
 Input also checks what InputKit cannot: the layout rows must match the target device's key layout, each keycode must exist, and groups may only reference IDs defined in the same definition. The request also fails if the profile already has six layers or another configuration change conflicts with the request. Input reports these as `InputApiError`.
 
+When the device is open in Input's main window, the window adds the layer to its current configuration, including the user's unsaved edits, and saves it after its usual countdown. `{ added: true }` then means the window has the layer, not that the device has saved it. If that save fails, Input shows the error to the user rather than to your application. The profile and six-layer checks apply to the window's configuration, and the request fails with `InputApiError` code `-32013` if the window does not answer within 5 seconds. Otherwise, Input adds the layer to the configuration last saved to the device and resolves once the device has it.
+
 #### Layer lighting
 
 `definition.layer.lights` optionally sets the backlight and underglow of the new layer.
